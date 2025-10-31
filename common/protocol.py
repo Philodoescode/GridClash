@@ -4,7 +4,7 @@ from collections import namedtuple
 
 PROTOCOL_ID = b"GCUP"
 PROTOCOL_VERSION = 1
-HEADER_FORMAT = ">4sBBIIQHI" # using checksum CRC32
+HEADER_FORMAT = "!4sBBIIQHI" # using checksum CRC32
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT) # 28 bytes
 
 # Message Types
