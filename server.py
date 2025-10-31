@@ -41,13 +41,13 @@ def handle_client_hello(clientAddress, serverSocket):
         'seq_num': 0,
         'last_heartbeat': time.time(),
         'socket': serverSocket
-        # add initial pos later
+        # TODO: add initial pos later
     }
     next_player_id += 1
-    print(f"client {clientAddress} connected. player_id {player_id}")
+    print(f"{clientAddress} connected. player_id {player_id}")
     
     # respond with server hello message
-    payload = struct.pack('!I', player_id)  # Pack player_id as unsigned int
+    payload = struct.pack('!B', player_id) # as max is 4
     response_packet = pack_packet(MSG_SERVER_HELLO, 0, 0, time.time(), payload)  # noqa: F405
     serverSocket.sendto(response_packet, clientAddress)
 
@@ -76,14 +76,32 @@ def state_broadcast(serverSocket):
     if not clients:
         return
     snapshot_id += 1
+    current_timestamp = time.time()
     # create the payload for the game state update.
     # the payload contains positions of all players.
+    # each upadte should include:
+        # seq_num
+        # snapshot_id
+        # sever_timestamp
+    # TODO: implement payload calculation
+
+    # send packets to all connected clients    
+    for clientAddress, clientData in clients.items():
+        # create and pack data for each client to be sent to each
+        state_packet = pack_packet(MSG_GAME_STATE_UPDATE,  # noqa: F405
+                                   snapshot_id,
+                                   clientData['seq_num'],
+                                   current_timestamp,
+                                   # payload for pos
+                                   )
+        serverSocket.sendto(state_packet, clientAddress)
+        clientData['seq_num'] += 1
 
 def main():
     serverSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     serverSocket.bind(('', SERVER_PORT))
     serverSocket.setblocking(0) # so the server does not get stuck waiting for recvfrom()
-    print("The server is ready to receive")
+    print("Server is up and running.")
 
     # main server loop
     while 1:
