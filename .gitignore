@@ -268,3 +268,5 @@ __marimo__/
 #   https://pdm.fming.dev/latest/usage/project/#working-with-version-control
 .pdm.toml
 
+# Ignore logs folder (baseline test outputs)
+logs/
