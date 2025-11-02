@@ -21,7 +21,6 @@ from enum import IntEnum
 PROTOCOL_ID = b"GCUP"
 PROTOCOL_VERSION = 1
 HEADER_FORMAT = "!4sBBIIQHI"  # using checksum CRC32
-#TODO: can this just be hardcoded
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)  # 28 bytes
 
 
@@ -58,9 +57,6 @@ def create_header(msg_type, snapshot_id, seq_num, server_timestamp, payload_len,
 
 def parse_header(header_bytes):
     """Parse packet header."""
-    # TODO: Should this check for exact size or only if its less, if so remove check in unpack
-    if len(header_bytes) != HEADER_SIZE:
-        raise ValueError(f"Invalid header length {len(header_bytes)}. Expected {HEADER_SIZE} bytes.")
     return struct.unpack(HEADER_FORMAT, header_bytes)
 
 

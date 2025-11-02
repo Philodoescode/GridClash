@@ -103,8 +103,6 @@ class GridClient:
             self.socket.close()
 
 
-# TODO: implement render_game function : will update the current game state. probably will be just print outs at this phase
-
 def main():
     parser = argparse.ArgumentParser(description="GridClash Client")
     parser.add_argument("--id", type=int, default=0, help="Client ID")
