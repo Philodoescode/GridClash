@@ -11,7 +11,7 @@ import signal
 
 # Configuration
 RUN_DURATION = 30      # seconds
-NUM_CLIENTS = 2        # number of clients to simulate
+NUM_CLIENTS = 4        # number of clients to simulate
 SERVER_CMD = ["python", "src/server.py"]
 CLIENT_CMD = ["python", "src/client.py"]
 LOG_DIR = "logs"
