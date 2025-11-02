@@ -80,7 +80,7 @@ class GridServer:
         # respond with server hello message
         payload = struct.pack('!B', player_id)  # as max is 4
         response_packet = pack_packet(MessageType.SERVER_INIT_RESPONSE, 0, 0, get_current_timestamp_ms(),
-                                      payload)  # noqa: F405
+                                      payload)
         self.socket.sendto(response_packet, client_address)
 
     # updating client heartbeat
@@ -131,7 +131,7 @@ class GridServer:
         for clientAddress, clientData in self.clients.items():
             clientData['seq_num'] += 1
             packet = pack_packet(MessageType.SNAPSHOT, self.snapshot_id, clientData['seq_num'], current_timestamp,
-                                 payload)  # noqa: F405
+                                 payload)
             self.socket.sendto(packet, clientAddress)
 
     def run(self):
@@ -146,10 +146,10 @@ class GridServer:
             try:
                 try:
                     data, client_address = self.socket.recvfrom(self.max_packet_size)
-                    pkt, payload = unpack_packet(data)  # noqa: F405
-                    if pkt.msg_type == MessageType.CLIENT_INIT:  # noqa: F405
+                    pkt, payload = unpack_packet(data)
+                    if pkt.msg_type == MessageType.CLIENT_INIT:
                         self.handle_client_hello(client_address)
-                    elif pkt.msg_type == MessageType.HEARTBEAT:  # noqa: F405
+                    elif pkt.msg_type == MessageType.HEARTBEAT:
                         self.handle_client_heartbeat(client_address)
                 except BlockingIOError:
                     # Expected: no data to receive

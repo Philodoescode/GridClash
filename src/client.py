@@ -33,22 +33,22 @@ class GridClient:
     def send_hello(self):
         """Send hello message to server."""
         payload = struct.pack('!B', self.client_id)
-        packet = pack_packet(MessageType.CLIENT_INIT, 0, 0, get_current_timestamp_ms(), payload)  # noqa: F405
+        packet = pack_packet(MessageType.CLIENT_INIT, 0, 0, get_current_timestamp_ms(), payload)
         self.socket.sendto(packet, self.server_address)
         print(f"[CLIENT {self.client_id}] Sent HELLO")
 
     def send_heartbeat(self):
         """Send heartbeat to server."""
         payload = struct.pack('!B', self.client_id)
-        packet = pack_packet(MessageType.HEARTBEAT, 0, 0, get_current_timestamp_ms(), payload)  # noqa: F405
+        packet = pack_packet(MessageType.HEARTBEAT, 0, 0, get_current_timestamp_ms(), payload)
         self.socket.sendto(packet, self.server_address)
         print(f"[CLIENT {self.client_id}] Sent HEARTBEAT")
 
     def handle_server_hello(self, data):
         """Process SERVER_HELLO response."""
         try:
-            pkt, payload = unpack_packet(data)  # noqa: F405
-            if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE and len(payload) >= 1:  # noqa: F405
+            pkt, payload = unpack_packet(data)
+            if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE and len(payload) >= 1:
                 assigned_id = struct.unpack('!B', payload[:1])[0]
                 print(f"[CLIENT] Server assigned ID: {assigned_id}")
         except ValueError as e:
@@ -56,11 +56,11 @@ class GridClient:
 
     def handle_game_state_update(self, data):
         """Process game state update."""
-        recv_ts_ms = get_current_timestamp_ms()  # noqa: F405
+        recv_ts_ms = get_current_timestamp_ms()
 
         try:
-            packet, payload = unpack_packet(data)  # noqa: F405
-            if packet.msg_type == MessageType.SNAPSHOT:  # noqa: F405
+            packet, payload = unpack_packet(data)
+            if packet.msg_type == MessageType.SNAPSHOT:
                 # self.handle_game_state_update(payload)
                 self.packet_count += 1
                 latency = recv_ts_ms - packet.server_timestamp
@@ -88,12 +88,12 @@ class GridClient:
                     self.last_heartbeat_time = current_time
 
                 try:
-                    data, addr = self.socket.recvfrom(MAX_PACKET_SIZE)  # noqa: F405
+                    data, addr = self.socket.recvfrom(MAX_PACKET_SIZE)
                     if addr == self.server_address:
-                        pkt, _ = unpack_packet(data)  # noqa: F405
-                        if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE:  # noqa: F405
+                        pkt, _ = unpack_packet(data)
+                        if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE:
                             self.handle_server_hello(data)
-                        elif pkt.msg_type == MessageType.SNAPSHOT:  # noqa: F405
+                        elif pkt.msg_type == MessageType.SNAPSHOT:
                             self.handle_game_state_update(data)
                 except socket.timeout:
                     pass
