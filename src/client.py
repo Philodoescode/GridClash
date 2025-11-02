@@ -26,7 +26,7 @@ class GridClient:
         self.server_address = server_address
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.last_heartbeat_time = time.time()
-        self.heartbeat_interval = 1
+        self.heartbeat_interval = 1.0
         self.packet_count = 0
         self.latencies = []
 
@@ -54,12 +54,12 @@ class GridClient:
         except ValueError as e:
             print(f"[ERROR] Invalid SERVER_HELLO: {e}")
 
-    def handle_game_state_update(self, payload):
+    def handle_game_state_update(self, data):
         """Process game state update."""
         recv_ts_ms = get_current_timestamp_ms()  # noqa: F405
 
         try:
-            packet, payload = unpack_packet(payload)  # noqa: F405
+            packet, payload = unpack_packet(data)  # noqa: F405
             if packet.msg_type == MessageType.SNAPSHOT:  # noqa: F405
                 # self.handle_game_state_update(payload)
                 self.packet_count += 1
@@ -108,10 +108,15 @@ class GridClient:
 def main():
     parser = argparse.ArgumentParser(description="GridClash Client")
     parser.add_argument("--id", type=int, default=0, help="Client ID")
+    parser.add_argument("--host", default="127.0.0.1", help="Server host")
+    parser.add_argument("--port", type=int, default=12000, help="Server port")
+    parser.add_argument("--duration", type=int, default=30, help="Run duration (seconds)")
+    parser.add_argument("--heartbeat-interval", type=float, default=1.0, help="Heartbeat interval (seconds)")
     args = parser.parse_args()
 
-    client = GridClient(args.id)
-    client.run()
+    client = GridClient(args.id, (args.host, args.port))
+    client.heartbeat_interval = args.heartbeat_interval
+    client.run(duration_sec=args.duration)
 
 
 if __name__ == "__main__":
