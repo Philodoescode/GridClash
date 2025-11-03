@@ -157,6 +157,10 @@ class GridServer:
                 except socket.timeout:
                     # Expected: timeout
                     pass
+                except ConnectionResetError:
+                    # BUG FIX: This error occurs on Windows when a client socket is forcibly closed.
+                    # For a connectionless protocol like UDP, it's safe to ignore and continue operating.
+                    pass
                 except Exception as e:
                     print(f"[ERROR] Unexpected socket error: {e}")
                     continue
@@ -166,7 +170,7 @@ class GridServer:
                 # brodacast at the configured freq
                 if current_time - last_broadcast_time >= broadcast_interval:
                     self.state_broadcast()
-                    last_broadcast_time = current_time
+                    last_broadcast_time += broadcast_interval
 
                 # checking timeouts periodically (currently once every sec)
                 if current_time - last_timeout_check >= 1.0:

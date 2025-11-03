@@ -50,7 +50,8 @@ class GridClient:
             pkt, payload = unpack_packet(data)
             if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE and len(payload) >= 1:
                 assigned_id = struct.unpack('!B', payload[:1])[0]
-                print(f"[CLIENT] Server assigned ID: {assigned_id}")
+                print(f"[CLIENT {self.client_id}] Server assigned ID: {assigned_id}")
+                self.client_id = assigned_id  # BUG FIX: Update client ID with the one assigned by the server
         except ValueError as e:
             print(f"[ERROR] Invalid SERVER_HELLO: {e}")
 
@@ -100,6 +101,11 @@ class GridClient:
         except KeyboardInterrupt:
             print(f"[CLIENT {self.client_id}] Interrupted")
         finally:
+            # IMPROVEMENT: Add a final summary print for robust log parsing
+            if self.latencies:
+                avg_latency = sum(self.latencies) / len(self.latencies)
+                print(
+                    f"FINAL STATS: Received {self.packet_count} packets. Average latency: {avg_latency:.4f} ms")
             self.socket.close()
 
 

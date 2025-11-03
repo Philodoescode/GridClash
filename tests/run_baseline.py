@@ -44,6 +44,7 @@ def monitor_cpu_usage(pid, duration, log_filename):
     """Monitors a specific process PID for a given duration and logs its CPU usage."""
     try:
         process = psutil.Process(pid)
+        process.cpu_percent(interval=None)  # FIX: Initialize to get meaningful readings on first loop
     except psutil.NoSuchProcess:
         print(f"[MONITOR] Error: Server process with PID {pid} not found for monitoring.")
         return
@@ -158,9 +159,10 @@ def analyze_client_logs(num_clients):
     """Parses client text logs to extract final packet count and latency average."""
     all_client_latencies = []
     total_packets_received = 0
-    
-    # Regex to find the final cumulative average latency line
-    latency_pattern = re.compile(r"Received\s+(\d+)\s+packets\.\s+Average latency:\s+([0-9.]+)\s+ms")
+    clients_reporting = 0  # To count how many clients produced valid logs
+
+    # IMPROVEMENT: Changed regex to find the new, more reliable final summary line
+    final_stats_pattern = re.compile(r"FINAL STATS: Received\s+(\d+)\s+packets\.\s+Average latency:\s+([0-9.]+)\s+ms")
 
     for i in range(num_clients):
         client_log_path = os.path.join(LOG_DIR, f"client_{i}.log")
@@ -168,24 +170,24 @@ def analyze_client_logs(num_clients):
             continue
 
         with open(client_log_path, 'r') as f:
-            lines = f.readlines()
-        
-        # Search the log backwards for the last reported cumulative average
-        for line in reversed(lines):
-            match = latency_pattern.search(line)
-            if match:
-                packets_received = int(match.group(1))
-                latency_ms = float(match.group(2))
-                
-                all_client_latencies.append(latency_ms)
-                total_packets_received += packets_received
-                break
-    
-    if not all_client_latencies:
+            content = f.read()
+
+        # IMPROVEMENT: Search the entire file content for the final stats line
+        match = final_stats_pattern.search(content)
+        if match:
+            packets_received = int(match.group(1))
+            latency_ms = float(match.group(2))
+
+            all_client_latencies.append(latency_ms)
+            total_packets_received += packets_received
+            clients_reporting += 1  # Increment counter for successful parse
+
+    # IMPROVEMENT: Use clients_reporting for a more robust average calculation
+    if clients_reporting == 0:
         return 0, 0
-        
+
     overall_avg_latency = statistics.mean(all_client_latencies)
-    avg_packets_per_client = total_packets_received / num_clients
+    avg_packets_per_client = total_packets_received / clients_reporting
 
     return overall_avg_latency, avg_packets_per_client
 
