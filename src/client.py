@@ -25,10 +25,14 @@ class GridClient:
         self.client_id = client_id
         self.server_address = server_address
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        #self.socket.bind(('127.0.0.1', 12001)) # bind to a specific port for testing
         self.last_heartbeat_time = time.time()
         self.heartbeat_interval = 1.0
         self.packet_count = 0
         self.latencies = []
+        self.last_snapshot_id = -1
+        self.last_seq_num = -1
+
 
     def send_hello(self):
         """Send hello message to server."""
@@ -56,20 +60,29 @@ class GridClient:
             print(f"[ERROR] Invalid SERVER_HELLO: {e}")
 
     def handle_game_state_update(self, data):
-        """Process game state update."""
-        recv_ts_ms = get_current_timestamp_ms()
+        recv_ts_ms = get_current_timestamp_ms() #used for latency calculation
 
         try:
             packet, payload = unpack_packet(data)
-            if packet.msg_type == MessageType.SNAPSHOT:
-                # self.handle_game_state_update(payload)
-                self.packet_count += 1
-                latency = recv_ts_ms - packet.server_timestamp
-                self.latencies.append(latency)
 
-                if self.packet_count % 20 == 0:
-                    print(
-                        f"Received {self.packet_count} packets. Average latency: {sum(self.latencies) / len(self.latencies)} ms")
+            if packet.msg_type != MessageType.SNAPSHOT: #ignore heartbeats or server init messages 
+                return
+            if packet.snapshot_id < self.last_snapshot_id: #discard old snapshots
+                return
+            if packet.snapshot_id == self.last_snapshot_id and packet.seq_num <= self.last_seq_num: #discard duplicate or old packets within the same snapshot
+                return
+
+            #UPDATE LAST SEEN VALUES
+            self.last_snapshot_id = packet.snapshot_id
+            self.last_seq_num = packet.seq_num
+
+            #PROCESS VALID PACKET
+            self.packet_count += 1
+            latency = recv_ts_ms - packet.server_timestamp
+            self.latencies.append(latency)
+
+            if self.packet_count % 20 == 0:
+                print(f"Received {self.packet_count} packets. Average latency: {sum(self.latencies) / len(self.latencies)} ms")
 
         except Exception as e:
             print(f"Error unpacking packet: {e}")
@@ -101,11 +114,9 @@ class GridClient:
         except KeyboardInterrupt:
             print(f"[CLIENT {self.client_id}] Interrupted")
         finally:
-            # IMPROVEMENT: Add a final summary print for robust log parsing
             if self.latencies:
                 avg_latency = sum(self.latencies) / len(self.latencies)
-                print(
-                    f"FINAL STATS: Received {self.packet_count} packets. Average latency: {avg_latency:.4f} ms")
+                print(f"FINAL STATS: Received {self.packet_count} packets. Average latency: {avg_latency:.4f} ms")
             self.socket.close()
 
 
