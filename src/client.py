@@ -124,14 +124,25 @@ class GridClient:
             # Payload Parsing
             # Expected payload structure:
             #   num_players: 1 byte (!B)
-            #   then for each player: id (!B), x (!i), y (!i)  => 9 bytes per player
+            #   then for each player: id (!B), x (!i), y (!i), dx (!i), dy (!i) => 17 bytes per player
             if payload and len(payload) >= 1:
                 num_players = payload[0]
                 offset = 1
-                BYTES_PER_PLAYER = 9
+                BYTES_PER_PLAYER = 17
                 for _ in range(num_players):
                     if offset + BYTES_PER_PLAYER <= len(payload):
-                        p_id, pos_x, pos_y = struct.unpack('!Bii', payload[offset:offset + BYTES_PER_PLAYER])
+                        p_id, pos_x, pos_y, dx, dy = struct.unpack('!Biiii', payload[offset:offset + BYTES_PER_PLAYER])
+                        
+                        # --- Redundancy / Gap Filling ---
+                        # If we missed exactly one packet (seq_num diff is 2), we can reconstruct the missing state:
+                        # Missing pos = Current pos - Delta
+                        if self.last_seq_num != -1 and packet.seq_num == self.last_seq_num + 2:
+                            missing_x = pos_x - dx
+                            missing_y = pos_y - dy
+                            # For now, we just log that we recovered it. 
+                            # In a full interpolation system, we would insert this into the state buffer.
+                            print(f"[REDUNDANCY] Recovered missing state for P{p_id}: ({missing_x}, {missing_y})")
+
                         # update authoritative state (target)
                         self.target_players[p_id] = (pos_x, pos_y)
                         
