@@ -53,7 +53,8 @@ class GridClient:
         self.latencies = []
 
         # State Management (Phase 2)
-        self.other_players = {}  # {player_id: (x, y)}
+        self.target_players = {}   # {player_id: (target_x, target_y)} -> Authoritative from server
+        self.visual_players = {}   # {player_id: (curr_x, curr_y)}     -> Smoothed for rendering
 
         # Snapshot/sequence tracking to detect stale/duplicate packets
         self.last_snapshot_id = -1
@@ -131,8 +132,12 @@ class GridClient:
                 for _ in range(num_players):
                     if offset + BYTES_PER_PLAYER <= len(payload):
                         p_id, pos_x, pos_y = struct.unpack('!Bii', payload[offset:offset + BYTES_PER_PLAYER])
-                        # update authoritative state
-                        self.other_players[p_id] = (pos_x, pos_y)
+                        # update authoritative state (target)
+                        self.target_players[p_id] = (pos_x, pos_y)
+                        
+                        # If this is the first time seeing this player, snap visual to target immediately
+                        if p_id not in self.visual_players:
+                            self.visual_players[p_id] = (float(pos_x), float(pos_y))
                         offset += BYTES_PER_PLAYER
                     else:
                         # malformed / truncated payload for remaining players
@@ -145,6 +150,41 @@ class GridClient:
 
         except Exception as e:
             print(f"Error unpacking packet: {e}")
+
+    def update_visuals(self, dt):
+        """
+        Interpolate visual positions towards target positions.
+        dt: Time delta in seconds since last frame.
+        """
+        # Smoothing factor: Higher = snappier, Lower = smoother/laggier
+        # Using a frame-rate independent decay formula or simple lerp factor
+        # SIMPLE LERP FACTOR adjusted for dt:
+        # A common simple approach: factor = 1 - pow(decay, dt)
+        # Let's use a simple constant speed or factor for now.
+        
+        SMOOTHING_SPEED = 10.0 # units per second? No, simpler to use t-value interpolation
+        
+        # t = 1 - pow(0.01, dt) # Moves 99% of the way in 1 second
+        # Let's try a distinct factor:
+        lerp_factor = 10.0 * dt
+        if lerp_factor > 1.0:
+            lerp_factor = 1.0
+
+        for p_id, target_pos in self.target_players.items():
+            tx, ty = target_pos
+            
+            if p_id not in self.visual_players:
+                self.visual_players[p_id] = (float(tx), float(ty))
+                continue
+
+            vx, vy = self.visual_players[p_id]
+            
+            # LERP
+            new_vx = vx + (tx - vx) * lerp_factor
+            new_vy = vy + (ty - vy) * lerp_factor
+            
+            self.visual_players[p_id] = (new_vx, new_vy)
+
 
     def init_graphics(self):
         """Initialize Pygame graphics (Phase 3)."""
@@ -168,7 +208,7 @@ class GridClient:
             pygame.draw.line(self.screen, GRID_COLOR, (0, y), (SCREEN_WIDTH, y))
 
         # 3. Players
-        for p_id, (x, y) in self.other_players.items():
+        for p_id, (x, y) in self.visual_players.items():
             color = PLAYER_COLORS.get(p_id, PLAYER_COLORS['default'])
 
             # Note: Server currently sends raw pixels (10, 20, 30...). 
@@ -198,6 +238,7 @@ class GridClient:
         try:
             while running and (time.time() - start_time) < duration_sec:
                 current_time = time.time()
+                dt = self.clock.get_time() / 1000.0 # delta time in seconds (from tick)
 
                 # --- 1. Event Pump & Input (Phase 4 & 5) ---
                 for event in pygame.event.get():
@@ -238,6 +279,7 @@ class GridClient:
                     print(f"[NET ERROR] {e}")
 
                 # --- 3. Render (Phase 4) ---
+                self.update_visuals(dt)
                 self.draw_game()
                 self.clock.tick(60)  # Limit to 60 FPS
 
