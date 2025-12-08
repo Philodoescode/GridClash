@@ -23,6 +23,11 @@ PROTOCOL_VERSION = 1
 HEADER_FORMAT = "!4sBBIIQHI"  # using checksum CRC32
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)  # 28 bytes
 
+# Grid constants
+GRID_WIDTH = 20
+GRID_HEIGHT = 20
+UNCLAIMED_ID = 255  # Special value indicating a cell has no owner
+
 
 class MessageType(IntEnum):
     """Message types for the GridClash protocol."""
@@ -30,6 +35,8 @@ class MessageType(IntEnum):
     HEARTBEAT = 1  # Client → Server (keep-alive)
     CLIENT_INIT = 2  # Client → Server (register)
     SERVER_INIT_RESPONSE = 3  # Server → Client (confirm registration)
+    ACQUIRE_REQUEST = 4  # Client → Server (row, col - request to claim a cell)
+    GAME_OVER = 5  # Server → Client (winner_id, winner_score)
 
 
 # used a namedtuple instead of class for simplicity

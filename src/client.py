@@ -162,6 +162,27 @@ class GridClient:
         except Exception as e:
             print(f"Error unpacking packet: {e}")
 
+    def handle_game_over(self, data):
+        """Process GAME_OVER message."""
+        try:
+            packet, payload = unpack_packet(data)
+            if packet.msg_type == MessageType.GAME_OVER and len(payload) >= 3:
+                winner_id, winner_score = struct.unpack('!BH', payload[:3])
+                self.game_over = True
+                self.winner_info = (winner_id, winner_score)
+                print(f"[GAME OVER] Winner: Player {winner_id} with score {winner_score}")
+        except Exception as e:
+            print(f"Error handling game over: {e}")
+
+    def send_acquire_request(self, row, col):
+        """Send ACQUIRE_REQUEST to claim a cell."""
+        if self.game_over:
+            return
+        payload = struct.pack('!BB', row, col)
+        packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, 0, get_current_timestamp_ms(), payload)
+        self.socket.sendto(packet, self.server_address)
+        print(f"[CLIENT] Sent ACQUIRE_REQUEST for cell ({row}, {col})")
+
     def update_visuals(self, dt):
         """
         Interpolate visual positions towards target positions.

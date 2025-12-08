@@ -10,7 +10,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from src.protocol import pack_packet, MessageType, get_current_timestamp_ms, unpack_packet
+from src.protocol import pack_packet, MessageType, get_current_timestamp_ms, unpack_packet, GRID_WIDTH, GRID_HEIGHT, UNCLAIMED_ID
 
 # Network configurations
 DEFAULT_PORT = 12000
@@ -50,6 +50,12 @@ class GridServer:
         self.snapshot_id = 0
         self.seq_num = 0
 
+        # Grid state: 400 bytes (20x20), each cell stores owner ID (255 = unclaimed)
+        self.grid_state = bytearray([UNCLAIMED_ID] * (GRID_WIDTH * GRID_HEIGHT))
+        self.scores = {}  # {player_id: score}
+        self.game_active = True
+        self.claimed_cells = 0
+
         print(f"[SERVER] Grid size: {grid_size}x{grid_size}")
         print(f"[SERVER] Server is up and running on port {self.port}")
 
@@ -74,6 +80,7 @@ class GridServer:
             'last_heartbeat': time.time(),
             'pos': (10 * (player_id + 1), 10 * (player_id + 1))  # just a placeholder
         }
+        self.scores[player_id] = 0  # Initialize score for new player
         self.next_player_id += 1
         print(f"{client_address} connected. player_id {player_id}")
 
