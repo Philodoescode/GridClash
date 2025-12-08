@@ -46,15 +46,19 @@ class GridClient:
         self.client_id = client_id
         self.server_address = server_address
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # self.socket.bind(('127.0.0.1', 12001)) # bind to a specific port for testing
         self.last_heartbeat_time = time.time()
         self.heartbeat_interval = 1.0
         self.packet_count = 0
         self.latencies = []
-        
+
         # State Management (Phase 2)
         self.other_players = {}  # {player_id: (x, y)}
-        self.last_processed_snapshot_id = -1
-        
+
+        # Snapshot/sequence tracking to detect stale/duplicate packets
+        self.last_snapshot_id = -1
+        self.last_seq_num = -1
+
         # Graphics context
         self.screen = None
         self.clock = None
@@ -81,7 +85,7 @@ class GridClient:
                 assigned_id = struct.unpack('!B', payload[:1])[0]
                 print(f"[CLIENT {self.client_id}] Server assigned ID: {assigned_id}")
                 self.client_id = assigned_id
-                
+
                 # Update window title if graphics are initialized
                 if self.screen:
                     pygame.display.set_caption(f"GridClash - Player {self.client_id}")
@@ -89,44 +93,55 @@ class GridClient:
             print(f"[ERROR] Invalid SERVER_HELLO: {e}")
 
     def handle_game_state_update(self, data):
-        """Process game state update (Phase 2)."""
-        recv_ts_ms = get_current_timestamp_ms()
+        """Process game state update (snapshots)."""
+        recv_ts_ms = get_current_timestamp_ms()  # used for latency calculation
 
         try:
             packet, payload = unpack_packet(data)
-            
-            # 1. Stale Packet Check
-            if packet.snapshot_id <= self.last_processed_snapshot_id:
-                return # Discard older or duplicate snapshots
-            
-            self.last_processed_snapshot_id = packet.snapshot_id
 
-            if packet.msg_type == MessageType.SNAPSHOT:
-                self.packet_count += 1
-                latency = recv_ts_ms - packet.server_timestamp
-                self.latencies.append(latency)
+            # Only process snapshots
+            if packet.msg_type != MessageType.SNAPSHOT:
+                return
 
-                # 2. Payload Parsing
-                # Structure: num_players (!B), then loop of [id (!B), x (!i), y (!i)]
-                if len(payload) > 0:
-                    num_players = payload[0]
-                    offset = 1
-                    
-                    # Expecting 9 bytes per player: 1 (ID) + 4 (X) + 4 (Y)
-                    BYTES_PER_PLAYER = 9
-                    
-                    for _ in range(num_players):
-                        if offset + BYTES_PER_PLAYER <= len(payload):
-                            p_id, pos_x, pos_y = struct.unpack('!Bii', payload[offset:offset+BYTES_PER_PLAYER])
-                            
-                            # Update authoritative state
-                            self.other_players[p_id] = (pos_x, pos_y)
-                            
-                            offset += BYTES_PER_PLAYER
+            # Stale/duplicate checks:
+            # - If snapshot_id < last_snapshot_id => older snapshot
+            # - If same snapshot_id but seq_num <= last_seq_num => duplicate/old
+            if packet.snapshot_id < self.last_snapshot_id:
+                return
+            if packet.snapshot_id == self.last_snapshot_id and packet.seq_num <= self.last_seq_num:
+                return
 
-                if self.packet_count % 60 == 0: # Log less frequently in GUI mode
-                    avg = sum(self.latencies) / len(self.latencies)
-                    print(f"[NET] Packets: {self.packet_count}, Avg Latency: {avg:.2f} ms")
+            # Update last seen ids
+            self.last_snapshot_id = packet.snapshot_id
+            self.last_seq_num = packet.seq_num
+
+            # Bookkeeping
+            self.packet_count += 1
+            latency = recv_ts_ms - packet.server_timestamp
+            self.latencies.append(latency)
+
+            # Payload Parsing
+            # Expected payload structure:
+            #   num_players: 1 byte (!B)
+            #   then for each player: id (!B), x (!i), y (!i)  => 9 bytes per player
+            if payload and len(payload) >= 1:
+                num_players = payload[0]
+                offset = 1
+                BYTES_PER_PLAYER = 9
+                for _ in range(num_players):
+                    if offset + BYTES_PER_PLAYER <= len(payload):
+                        p_id, pos_x, pos_y = struct.unpack('!Bii', payload[offset:offset + BYTES_PER_PLAYER])
+                        # update authoritative state
+                        self.other_players[p_id] = (pos_x, pos_y)
+                        offset += BYTES_PER_PLAYER
+                    else:
+                        # malformed / truncated payload for remaining players
+                        break
+
+            # Periodic logging
+            if self.packet_count % 60 == 0 and self.latencies:
+                avg = sum(self.latencies) / len(self.latencies)
+                print(f"[NET] Packets: {self.packet_count}, Avg Latency: {avg:.2f} ms")
 
         except Exception as e:
             print(f"Error unpacking packet: {e}")
@@ -155,11 +170,11 @@ class GridClient:
         # 3. Players
         for p_id, (x, y) in self.other_players.items():
             color = PLAYER_COLORS.get(p_id, PLAYER_COLORS['default'])
-            
+
             # Note: Server currently sends raw pixels (10, 20, 30...). 
             # We draw a circle at these exact coordinates.
             pygame.draw.circle(self.screen, color, (x, y), 10)
-            
+
             # Optional: Highlight self
             if p_id == self.client_id:
                 pygame.draw.circle(self.screen, BLACK, (x, y), 12, 2)
@@ -171,13 +186,13 @@ class GridClient:
         """Main client loop (Phase 4)."""
         self.init_graphics()
         self.send_hello()
-        
+
         # Non-Blocking Socket (Phase 4)
         self.socket.setblocking(False)
 
         start_time = time.time()
         running = True
-        
+
         print(f"[CLIENT] Graphics started. Window open.")
 
         try:
@@ -188,7 +203,7 @@ class GridClient:
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
                         running = False
-                    
+
                     # Phase 5: Client Input
                     elif event.type == pygame.MOUSEBUTTONDOWN:
                         mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -232,8 +247,14 @@ class GridClient:
             if self.latencies:
                 avg_latency = sum(self.latencies) / len(self.latencies)
                 print(f"FINAL STATS: Received {self.packet_count} packets. Average latency: {avg_latency:.4f} ms")
-            
-            pygame.quit()
+
+            try:
+                if pygame.get_init():
+                    pygame.quit()
+            except Exception:
+                # ignore pygame shutdown issues
+                pass
+
             self.socket.close()
 
 
