@@ -14,7 +14,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from src.protocol import unpack_packet, get_current_timestamp_ms, pack_packet, MessageType
+from src.protocol import unpack_packet, get_current_timestamp_ms, pack_packet, MessageType, GRID_WIDTH, GRID_HEIGHT, UNCLAIMED_ID
 from src.server import MAX_PACKET_SIZE
 
 # --- Visualization Constants (Phase 1) ---
@@ -60,9 +60,16 @@ class GridClient:
         self.last_snapshot_id = -1
         self.last_seq_num = -1
 
+        # Grid state (Phase 3)
+        self.grid_state = bytearray([UNCLAIMED_ID] * (GRID_WIDTH * GRID_HEIGHT))
+        self.player_scores = {}  # {player_id: score}
+        self.game_over = False
+        self.winner_info = None  # (winner_id, winner_score)
+
         # Graphics context
         self.screen = None
         self.clock = None
+        self.font = None
 
     def send_hello(self):
         """Send hello message to server."""
@@ -95,7 +102,7 @@ class GridClient:
 
     def handle_game_state_update(self, data):
         """Process game state update (snapshots)."""
-        recv_ts_ms = get_current_timestamp_ms()  # used for latency calculation
+        recv_ts_ms = get_current_timestamp_ms()
 
         try:
             packet, payload = unpack_packet(data)
@@ -121,38 +128,37 @@ class GridClient:
             latency = recv_ts_ms - packet.server_timestamp
             self.latencies.append(latency)
 
-            # Payload Parsing
-            # Expected payload structure:
-            #   num_players: 1 byte (!B)
-            #   then for each player: id (!B), x (!i), y (!i), dx (!i), dy (!i) => 17 bytes per player
-            if payload and len(payload) >= 1:
-                num_players = payload[0]
-                offset = 1
-                BYTES_PER_PLAYER = 17
-                for _ in range(num_players):
-                    if offset + BYTES_PER_PLAYER <= len(payload):
-                        p_id, pos_x, pos_y, dx, dy = struct.unpack('!Biiii', payload[offset:offset + BYTES_PER_PLAYER])
-                        
-                        # --- Redundancy / Gap Filling ---
-                        # If we missed exactly one packet (seq_num diff is 2), we can reconstruct the missing state:
-                        # Missing pos = Current pos - Delta
-                        if self.last_seq_num != -1 and packet.seq_num == self.last_seq_num + 2:
-                            missing_x = pos_x - dx
-                            missing_y = pos_y - dy
-                            # For now, we just log that we recovered it. 
-                            # In a full interpolation system, we would insert this into the state buffer.
-                            print(f"[REDUNDANCY] Recovered missing state for P{p_id}: ({missing_x}, {missing_y})")
-
-                        # update authoritative state (target)
-                        self.target_players[p_id] = (pos_x, pos_y)
-                        
-                        # If this is the first time seeing this player, snap visual to target immediately
-                        if p_id not in self.visual_players:
-                            self.visual_players[p_id] = (float(pos_x), float(pos_y))
-                        offset += BYTES_PER_PLAYER
-                    else:
-                        # malformed / truncated payload for remaining players
-                        break
+            # New Payload Structure:
+            # 1. Grid data: 400 bytes (20x20 flat array)
+            # 2. Player count: 1 byte
+            # 3. Per player: ID (!B), Score (!H), X (!i), Y (!i) = 11 bytes each
+            
+            GRID_SIZE = GRID_WIDTH * GRID_HEIGHT  # 400
+            
+            if len(payload) < GRID_SIZE + 1:
+                return  # Malformed payload
+            
+            self.grid_state = bytearray(payload[:GRID_SIZE])
+            
+            num_players = payload[GRID_SIZE]
+            offset = GRID_SIZE + 1
+            
+            BYTES_PER_PLAYER = 11  # ID(1) + Score(2) + X(4) + Y(4)
+            
+            for _ in range(num_players):
+                if offset + BYTES_PER_PLAYER <= len(payload):
+                    p_id, score, pos_x, pos_y = struct.unpack('!BHii', payload[offset:offset + BYTES_PER_PLAYER])
+                    
+                    # Update authoritative state (target) and scores
+                    self.target_players[p_id] = (pos_x, pos_y)
+                    self.player_scores[p_id] = score
+                    
+                    # If this is the first time seeing this player, snap visual to target immediately
+                    if p_id not in self.visual_players:
+                        self.visual_players[p_id] = (float(pos_x), float(pos_y))
+                    offset += BYTES_PER_PLAYER
+                else:
+                    break
 
             # Periodic logging
             if self.packet_count % 60 == 0 and self.latencies:
@@ -160,7 +166,7 @@ class GridClient:
                 print(f"[NET] Packets: {self.packet_count}, Avg Latency: {avg:.2f} ms")
 
         except Exception as e:
-            print(f"Error unpacking packet: {e}")
+            print(f"Error unpacking packet: {e}")0
 
     def handle_game_over(self, data):
         """Process GAME_OVER message."""
