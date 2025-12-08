@@ -322,7 +322,7 @@ class GridClient:
         score_rect = score_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 20))
         self.screen.blit(score_surface, score_rect)
 
-    def run(self, duration_sec=30):
+    def run(self):
         """Main client loop (Phase 4)."""
         self.init_graphics()
         self.send_hello()
@@ -330,13 +330,12 @@ class GridClient:
         # Non-Blocking Socket (Phase 4)
         self.socket.setblocking(False)
 
-        start_time = time.time()
         running = True
 
         print(f"[CLIENT] Graphics started. Window open.")
 
         try:
-            while running and (time.time() - start_time) < duration_sec:
+            while running:
                 current_time = time.time()
                 dt = self.clock.get_time() / 1000.0 # delta time in seconds (from tick)
 
@@ -404,13 +403,12 @@ def main():
     parser.add_argument("--id", type=int, default=0, help="Client ID")
     parser.add_argument("--host", default="127.0.0.1", help="Server host")
     parser.add_argument("--port", type=int, default=12000, help="Server port")
-    parser.add_argument("--duration", type=int, default=30, help="Run duration (seconds)")
     parser.add_argument("--heartbeat-interval", type=float, default=1.0, help="Heartbeat interval (seconds)")
     args = parser.parse_args()
 
     client = GridClient(args.id, (args.host, args.port))
     client.heartbeat_interval = args.heartbeat_interval
-    client.run(duration_sec=args.duration)
+    client.run()
 
 
 if __name__ == "__main__":
