@@ -6,6 +6,9 @@ import struct
 import sys
 import time
 
+# Pygame Import (Phase 1)
+import pygame
+
 # import from parent directory
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if PROJECT_ROOT not in sys.path:
@@ -14,6 +17,24 @@ if PROJECT_ROOT not in sys.path:
 from src.protocol import unpack_packet, get_current_timestamp_ms, pack_packet, MessageType
 from src.server import MAX_PACKET_SIZE
 
+# --- Visualization Constants (Phase 1) ---
+SCREEN_WIDTH = 600
+SCREEN_HEIGHT = 600
+GRID_SIZE = 20  # 20x20 Grid
+CELL_SIZE = SCREEN_WIDTH // GRID_SIZE
+
+# Colors
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GRID_COLOR = (200, 200, 200)
+
+PLAYER_COLORS = {
+    0: (255, 0, 0),      # Red
+    1: (0, 0, 255),      # Blue
+    2: (0, 255, 0),      # Green
+    3: (255, 255, 0),    # Yellow
+    'default': (100, 100, 100) # Gray for unknown IDs
+}
 
 class GridClient:
     """
@@ -29,6 +50,14 @@ class GridClient:
         self.heartbeat_interval = 1.0
         self.packet_count = 0
         self.latencies = []
+        
+        # State Management (Phase 2)
+        self.other_players = {}  # {player_id: (x, y)}
+        self.last_processed_snapshot_id = -1
+        
+        # Graphics context
+        self.screen = None
+        self.clock = None
 
     def send_hello(self):
         """Send hello message to server."""
@@ -42,7 +71,7 @@ class GridClient:
         payload = struct.pack('!B', self.client_id)
         packet = pack_packet(MessageType.HEARTBEAT, 0, 0, get_current_timestamp_ms(), payload)
         self.socket.sendto(packet, self.server_address)
-        print(f"[CLIENT {self.client_id}] Sent HEARTBEAT")
+        # print(f"[CLIENT {self.client_id}] Sent HEARTBEAT")
 
     def handle_server_hello(self, data):
         """Process SERVER_HELLO response."""
@@ -51,61 +80,160 @@ class GridClient:
             if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE and len(payload) >= 1:
                 assigned_id = struct.unpack('!B', payload[:1])[0]
                 print(f"[CLIENT {self.client_id}] Server assigned ID: {assigned_id}")
-                self.client_id = assigned_id  # BUG FIX: Update client ID with the one assigned by the server
+                self.client_id = assigned_id
+                
+                # Update window title if graphics are initialized
+                if self.screen:
+                    pygame.display.set_caption(f"GridClash - Player {self.client_id}")
         except ValueError as e:
             print(f"[ERROR] Invalid SERVER_HELLO: {e}")
 
     def handle_game_state_update(self, data):
-        """Process game state update."""
+        """Process game state update (Phase 2)."""
         recv_ts_ms = get_current_timestamp_ms()
 
         try:
             packet, payload = unpack_packet(data)
+            
+            # 1. Stale Packet Check
+            if packet.snapshot_id <= self.last_processed_snapshot_id:
+                return # Discard older or duplicate snapshots
+            
+            self.last_processed_snapshot_id = packet.snapshot_id
+
             if packet.msg_type == MessageType.SNAPSHOT:
-                # self.handle_game_state_update(payload)
                 self.packet_count += 1
                 latency = recv_ts_ms - packet.server_timestamp
                 self.latencies.append(latency)
 
-                if self.packet_count % 20 == 0:
-                    print(
-                        f"Received {self.packet_count} packets. Average latency: {sum(self.latencies) / len(self.latencies)} ms")
+                # 2. Payload Parsing
+                # Structure: num_players (!B), then loop of [id (!B), x (!i), y (!i)]
+                if len(payload) > 0:
+                    num_players = payload[0]
+                    offset = 1
+                    
+                    # Expecting 9 bytes per player: 1 (ID) + 4 (X) + 4 (Y)
+                    BYTES_PER_PLAYER = 9
+                    
+                    for _ in range(num_players):
+                        if offset + BYTES_PER_PLAYER <= len(payload):
+                            p_id, pos_x, pos_y = struct.unpack('!Bii', payload[offset:offset+BYTES_PER_PLAYER])
+                            
+                            # Update authoritative state
+                            self.other_players[p_id] = (pos_x, pos_y)
+                            
+                            offset += BYTES_PER_PLAYER
+
+                if self.packet_count % 60 == 0: # Log less frequently in GUI mode
+                    avg = sum(self.latencies) / len(self.latencies)
+                    print(f"[NET] Packets: {self.packet_count}, Avg Latency: {avg:.2f} ms")
 
         except Exception as e:
             print(f"Error unpacking packet: {e}")
 
+    def init_graphics(self):
+        """Initialize Pygame graphics (Phase 3)."""
+        pygame.init()
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption(f"GridClash - Player {self.client_id}")
+        self.clock = pygame.time.Clock()
+
+    def draw_game(self):
+        """Render the game state (Phase 3)."""
+        if not self.screen:
+            return
+
+        # 1. Background
+        self.screen.fill(WHITE)
+
+        # 2. Grid Lines
+        for x in range(0, SCREEN_WIDTH, CELL_SIZE):
+            pygame.draw.line(self.screen, GRID_COLOR, (x, 0), (x, SCREEN_HEIGHT))
+        for y in range(0, SCREEN_HEIGHT, CELL_SIZE):
+            pygame.draw.line(self.screen, GRID_COLOR, (0, y), (SCREEN_WIDTH, y))
+
+        # 3. Players
+        for p_id, (x, y) in self.other_players.items():
+            color = PLAYER_COLORS.get(p_id, PLAYER_COLORS['default'])
+            
+            # Note: Server currently sends raw pixels (10, 20, 30...). 
+            # We draw a circle at these exact coordinates.
+            pygame.draw.circle(self.screen, color, (x, y), 10)
+            
+            # Optional: Highlight self
+            if p_id == self.client_id:
+                pygame.draw.circle(self.screen, BLACK, (x, y), 12, 2)
+
+        # 4. Display Flip
+        pygame.display.flip()
+
     def run(self, duration_sec=30):
-        """Main client loop."""
+        """Main client loop (Phase 4)."""
+        self.init_graphics()
         self.send_hello()
-        self.socket.settimeout(1.0)
+        
+        # Non-Blocking Socket (Phase 4)
+        self.socket.setblocking(False)
 
         start_time = time.time()
+        running = True
+        
+        print(f"[CLIENT] Graphics started. Window open.")
+
         try:
-            while (time.time() - start_time) < duration_sec:
+            while running and (time.time() - start_time) < duration_sec:
                 current_time = time.time()
 
+                # --- 1. Event Pump & Input (Phase 4 & 5) ---
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        running = False
+                    
+                    # Phase 5: Client Input
+                    elif event.type == pygame.MOUSEBUTTONDOWN:
+                        mouse_x, mouse_y = pygame.mouse.get_pos()
+                        grid_x = mouse_x // CELL_SIZE
+                        grid_y = mouse_y // CELL_SIZE
+                        print(f"[INPUT] Clicked Pixel ({mouse_x},{mouse_y}) -> Grid ({grid_x}, {grid_y})")
+                        # Note: Sending the move request packet is skipped here 
+                        # because protocol/server currently does not support MOVE messages.
+                        # Logic acts as a visual placeholder for movement intent.
+
+                # --- 2. Network Receive (Polling) (Phase 4) ---
                 if (current_time - self.last_heartbeat_time) >= self.heartbeat_interval:
                     self.send_heartbeat()
                     self.last_heartbeat_time = current_time
 
+                # Drain the socket buffer
                 try:
-                    data, addr = self.socket.recvfrom(MAX_PACKET_SIZE)
-                    if addr == self.server_address:
-                        pkt, _ = unpack_packet(data)
-                        if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE:
-                            self.handle_server_hello(data)
-                        elif pkt.msg_type == MessageType.SNAPSHOT:
-                            self.handle_game_state_update(data)
+                    while True:
+                        data, addr = self.socket.recvfrom(MAX_PACKET_SIZE)
+                        if addr == self.server_address:
+                            pkt, _ = unpack_packet(data)
+                            if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE:
+                                self.handle_server_hello(data)
+                            elif pkt.msg_type == MessageType.SNAPSHOT:
+                                self.handle_game_state_update(data)
+                except BlockingIOError:
+                    # No more data available right now
+                    pass
                 except socket.timeout:
                     pass
+                except Exception as e:
+                    print(f"[NET ERROR] {e}")
+
+                # --- 3. Render (Phase 4) ---
+                self.draw_game()
+                self.clock.tick(60)  # Limit to 60 FPS
+
         except KeyboardInterrupt:
             print(f"[CLIENT {self.client_id}] Interrupted")
         finally:
-            # IMPROVEMENT: Add a final summary print for robust log parsing
             if self.latencies:
                 avg_latency = sum(self.latencies) / len(self.latencies)
-                print(
-                    f"FINAL STATS: Received {self.packet_count} packets. Average latency: {avg_latency:.4f} ms")
+                print(f"FINAL STATS: Received {self.packet_count} packets. Average latency: {avg_latency:.4f} ms")
+            
+            pygame.quit()
             self.socket.close()
 
 

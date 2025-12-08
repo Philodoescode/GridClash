@@ -270,3 +270,7 @@ __marimo__/
 
 # Ignore logs folder (baseline test outputs)
 logs/
+
+#related to philo
+copierv1.py
+compiled_code.txt
