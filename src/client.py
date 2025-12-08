@@ -166,7 +166,7 @@ class GridClient:
                 print(f"[NET] Packets: {self.packet_count}, Avg Latency: {avg:.2f} ms")
 
         except Exception as e:
-            print(f"Error unpacking packet: {e}")0
+            print(f"Error unpacking packet: {e}")
 
     def handle_game_over(self, data):
         """Process GAME_OVER message."""
@@ -230,6 +230,7 @@ class GridClient:
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption(f"GridClash - Player {self.client_id}")
         self.clock = pygame.time.Clock()
+        self.font = pygame.font.Font(None, 24)
 
     def draw_game(self):
         """Render the game state (Phase 3)."""
@@ -239,26 +240,87 @@ class GridClient:
         # 1. Background
         self.screen.fill(WHITE)
 
-        # 2. Grid Lines
+        # 2. Claimed Cells (render before grid lines)
+        for row in range(GRID_HEIGHT):
+            for col in range(GRID_WIDTH):
+                owner_id = self.grid_state[row * GRID_WIDTH + col]
+                if owner_id != UNCLAIMED_ID:
+                    color = PLAYER_COLORS.get(owner_id, PLAYER_COLORS['default'])
+                    rect = (col * CELL_SIZE, row * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+                    pygame.draw.rect(self.screen, color, rect)
+
+        # 3. Grid Lines
         for x in range(0, SCREEN_WIDTH, CELL_SIZE):
             pygame.draw.line(self.screen, GRID_COLOR, (x, 0), (x, SCREEN_HEIGHT))
         for y in range(0, SCREEN_HEIGHT, CELL_SIZE):
             pygame.draw.line(self.screen, GRID_COLOR, (0, y), (SCREEN_WIDTH, y))
 
-        # 3. Players
+        # 4. Players (cursors)
         for p_id, (x, y) in self.visual_players.items():
             color = PLAYER_COLORS.get(p_id, PLAYER_COLORS['default'])
-
-            # Note: Server currently sends raw pixels (10, 20, 30...). 
-            # We draw a circle at these exact coordinates.
-            pygame.draw.circle(self.screen, color, (x, y), 10)
-
-            # Optional: Highlight self
+            pygame.draw.circle(self.screen, color, (int(x), int(y)), 10)
+            # Highlight self
             if p_id == self.client_id:
-                pygame.draw.circle(self.screen, BLACK, (x, y), 12, 2)
+                pygame.draw.circle(self.screen, BLACK, (int(x), int(y)), 12, 2)
 
-        # 4. Display Flip
+        # 5. Scoreboard
+        self.draw_scoreboard()
+
+        # 6. Game Over Overlay
+        if self.game_over and self.winner_info:
+            self.draw_game_over_overlay()
+
+        # 7. Display Flip
         pygame.display.flip()
+
+    def draw_scoreboard(self):
+        """Draw score overlay in top-left corner."""
+        if not self.font:
+            return
+        
+        y_offset = 10
+        for p_id in sorted(self.player_scores.keys()):
+            score = self.player_scores[p_id]
+            color = PLAYER_COLORS.get(p_id, PLAYER_COLORS['default'])
+            # Create label
+            label = f"P{p_id}: {score}"
+            if p_id == self.client_id:
+                label += " (You)"
+            text_surface = self.font.render(label, True, color)
+            # Draw background for readability
+            bg_rect = text_surface.get_rect(topleft=(10, y_offset))
+            bg_rect.inflate_ip(6, 2)
+            pygame.draw.rect(self.screen, (255, 255, 255, 200), bg_rect)
+            self.screen.blit(text_surface, (10, y_offset))
+            y_offset += 22
+
+    def draw_game_over_overlay(self):
+        """Draw game over screen."""
+        if not self.font or not self.winner_info:
+            return
+        
+        winner_id, winner_score = self.winner_info
+        
+        # Semi-transparent overlay
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        self.screen.blit(overlay, (0, 0))
+        
+        # Winner text
+        big_font = pygame.font.Font(None, 48)
+        if winner_id == self.client_id:
+            text = "YOU WIN!"
+        else:
+            text = f"Player {winner_id} Wins!"
+        text_surface = big_font.render(text, True, (255, 255, 255))
+        text_rect = text_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 30))
+        self.screen.blit(text_surface, text_rect)
+        
+        # Score text
+        score_text = f"Score: {winner_score}"
+        score_surface = self.font.render(score_text, True, (200, 200, 200))
+        score_rect = score_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 20))
+        self.screen.blit(score_surface, score_rect)
 
     def run(self, duration_sec=30):
         """Main client loop (Phase 4)."""
@@ -283,15 +345,12 @@ class GridClient:
                     if event.type == pygame.QUIT:
                         running = False
 
-                    # Phase 5: Client Input
                     elif event.type == pygame.MOUSEBUTTONDOWN:
                         mouse_x, mouse_y = pygame.mouse.get_pos()
                         grid_x = mouse_x // CELL_SIZE
                         grid_y = mouse_y // CELL_SIZE
                         print(f"[INPUT] Clicked Pixel ({mouse_x},{mouse_y}) -> Grid ({grid_x}, {grid_y})")
-                        # Note: Sending the move request packet is skipped here 
-                        # because protocol/server currently does not support MOVE messages.
-                        # Logic acts as a visual placeholder for movement intent.
+                        self.send_acquire_request(grid_y, grid_x)
 
                 # --- 2. Network Receive (Polling) (Phase 4) ---
                 if (current_time - self.last_heartbeat_time) >= self.heartbeat_interval:
@@ -308,6 +367,8 @@ class GridClient:
                                 self.handle_server_hello(data)
                             elif pkt.msg_type == MessageType.SNAPSHOT:
                                 self.handle_game_state_update(data)
+                            elif pkt.msg_type == MessageType.GAME_OVER:
+                                self.handle_game_over(data)
                 except BlockingIOError:
                     # No more data available right now
                     pass
