@@ -108,44 +108,90 @@ class GridServer:
             print(f"{clientAddress} timed out")
             del self.clients[clientAddress]
 
+    def handle_acquire_request(self, client_address, payload):
+        """Handle cell acquisition request from client."""
+        if not self.game_active:
+            return
+        
+        if client_address not in self.clients:
+            return
+        
+        if len(payload) < 2:
+            return
+        
+        row, col = struct.unpack('!BB', payload[:2])
+        
+        # Validate bounds
+        if row >= GRID_HEIGHT or col >= GRID_WIDTH:
+            return
+        
+        index = row * GRID_WIDTH + col
+        
+        # Check if cell is unclaimed (FCFS - first packet wins)
+        if self.grid_state[index] != UNCLAIMED_ID:
+            return
+        
+        player_id = self.clients[client_address]['player_id']
+        
+        # Claim the cell
+        self.grid_state[index] = player_id
+        self.scores[player_id] = self.scores.get(player_id, 0) + 1
+        self.claimed_cells += 1
+        
+        print(f"[ACQUIRE] Player {player_id} claimed cell ({row}, {col}). Score: {self.scores[player_id]}")
+        
+        # Check for game over
+        if self.claimed_cells >= GRID_WIDTH * GRID_HEIGHT:
+            self.broadcast_game_over()
+
+    def broadcast_game_over(self):
+        """Broadcast GAME_OVER to all clients."""
+        self.game_active = False
+        
+        # Find winner (highest score)
+        winner_id = 0
+        winner_score = 0
+        for player_id, score in self.scores.items():
+            if score > winner_score:
+                winner_id = player_id
+                winner_score = score
+        
+        print(f"[GAME OVER] Winner: Player {winner_id} with score {winner_score}")
+        
+        payload = struct.pack('!BH', winner_id, winner_score)
+        current_timestamp = get_current_timestamp_ms()
+        
+        for clientAddress, clientData in self.clients.items():
+            clientData['seq_num'] += 1
+            packet = pack_packet(MessageType.GAME_OVER, self.snapshot_id, clientData['seq_num'], current_timestamp, payload)
+            self.socket.sendto(packet, clientAddress)
+
     # DATA broadcast
     def state_broadcast(self):
         if not self.clients:
             return
         self.snapshot_id += 1
         current_timestamp = get_current_timestamp_ms()
-        # create the payload for the game state update.
-        # the payload contains positions of all players.
-        # each upadte should include (already included in):
-        # seq_num
-        # snapshot_id
-        # sever_timestamp
-        # TODO: implement payload calculation
-
-        # payload calculation
-        # payload:
-        #   number of players
-        #   each player id
-        #   each player current pos in x and y
-        #   redundant delta (dx, dy) from previous frame
+        
+        # New payload structure:
+        # 1. Grid data: 400 bytes (20x20 flat array, 1 byte per cell = owner ID)
+        # 2. Player count: 1 byte
+        # 3. Per player: ID (!B), Score (!H), Cursor_X (!i), Cursor_Y (!i) = 11 bytes each
+        
+        # Pack grid state (400 bytes)
+        payload = bytes(self.grid_state)
+        
+        # Pack player count and player data
         num_players = len(self.clients)
-        payload = struct.pack('!B', num_players)
+        payload += struct.pack('!B', num_players)
+        
         for clientData in self.clients.values():
             player_id = clientData['player_id']
+            score = self.scores.get(player_id, 0)
             curr_pos = clientData['pos']
             
-            # Retrieve previous position, default to current if not set
-            prev_pos = clientData.get('prev_pos', curr_pos)
-            
-            # Calculate delta
-            dx = curr_pos[0] - prev_pos[0]
-            dy = curr_pos[1] - prev_pos[1]
-            
-            # Update prev_pos for next broadcast
-            clientData['prev_pos'] = curr_pos
-
-            # Pack: ID, X, Y, dX, dY
-            payload += struct.pack('!Biiii', player_id, curr_pos[0], curr_pos[1], dx, dy)
+            # Pack: ID (1 byte), Score (2 bytes), X (4 bytes), Y (4 bytes) = 11 bytes
+            payload += struct.pack('!BHii', player_id, score, curr_pos[0], curr_pos[1])
 
         # send packets to all connected clients
         for clientAddress, clientData in self.clients.items():
@@ -171,6 +217,8 @@ class GridServer:
                         self.handle_client_hello(client_address)
                     elif pkt.msg_type == MessageType.HEARTBEAT:
                         self.handle_client_heartbeat(client_address)
+                    elif pkt.msg_type == MessageType.ACQUIRE_REQUEST:
+                        self.handle_acquire_request(client_address, payload)
                 except BlockingIOError:
                     # Expected: no data to receive
                     pass
