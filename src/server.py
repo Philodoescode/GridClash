@@ -120,12 +120,25 @@ class GridServer:
         #   number of players
         #   each player id
         #   each player current pos in x and y
+        #   redundant delta (dx, dy) from previous frame
         num_players = len(self.clients)
         payload = struct.pack('!B', num_players)
         for clientData in self.clients.values():
             player_id = clientData['player_id']
-            posx, posy = clientData['pos']
-            payload += struct.pack('!Bii', player_id, posx, posy)
+            curr_pos = clientData['pos']
+            
+            # Retrieve previous position, default to current if not set
+            prev_pos = clientData.get('prev_pos', curr_pos)
+            
+            # Calculate delta
+            dx = curr_pos[0] - prev_pos[0]
+            dy = curr_pos[1] - prev_pos[1]
+            
+            # Update prev_pos for next broadcast
+            clientData['prev_pos'] = curr_pos
+
+            # Pack: ID, X, Y, dX, dY
+            payload += struct.pack('!Biiii', player_id, curr_pos[0], curr_pos[1], dx, dy)
 
         # send packets to all connected clients
         for clientAddress, clientData in self.clients.items():
