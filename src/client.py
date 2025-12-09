@@ -551,15 +551,22 @@ class GridClient:
                                 self.request_new_game()
                                 continue  # Skip grid click handling
 
-                        # Handle grid clicks (only if not game over)
+                        # Handle keyboard clicks (only if not game over)
+                    elif event.type == pygame.KEYDOWN:
                         if not self.game_over:
-                            mouse_x, mouse_y = event.pos
-                            # Only process clicks in the grid area
-                            if mouse_y < 600:
-                                grid_x = mouse_x // CELL_SIZE
-                                grid_y = mouse_y // CELL_SIZE
-                                print(f"[INPUT] Clicked Pixel ({mouse_x},{mouse_y}) -> Grid ({grid_x}, {grid_y})")
-                                self.send_acquire_request(grid_y, grid_x)
+                            match event.key:
+                                case pygame.K_UP:
+                                    self.send_acquire_request(self.pos_y - 1, self.pos_x)
+                                case pygame.K_DOWN:
+                                    self.send_acquire_request(self.pos_y + 1, self.pos_x)
+                                case pygame.K_LEFT:
+                                    self.send_acquire_request(self.pos_y, self.pos_x - 1)
+                                case pygame.K_RIGHT:
+                                    self.send_acquire_request(self.pos_y, self.pos_x + 1)
+                                case _:
+                                    pass
+
+
 
                 # --- 2. Network Receive (Polling) (Phase 4) ---
                 if (current_time - self.last_heartbeat_time) >= self.heartbeat_interval:
