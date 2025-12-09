@@ -224,7 +224,7 @@ class GridServer:
         
         # Find winner (highest score)
 
-
+        self.winner_id = 0  # Default to player 0
         for player_id, score in self.scores.items():
             if score > self.winner_score:
                 self.winner_id = player_id
@@ -234,8 +234,8 @@ class GridServer:
         
         payload = struct.pack('!BH', self.winner_id, self.winner_score)
         current_timestamp = get_current_timestamp_ms()
-        
-        for clientAddress, clientData in self.clients.items():
+        clients_snapshot = list(self.clients.items())
+        for clientAddress, clientData in clients_snapshot:
             clientData['seq_num'] += 1
             packet = pack_packet(MessageType.GAME_OVER, self.snapshot_id, clientData['seq_num'], current_timestamp, payload)
             self.socket.sendto(packet, clientAddress)
