@@ -55,40 +55,54 @@ class GridServer:
         self.scores = {}  # {player_id: score}
         self.game_active = True
         self.claimed_cells = 0
-
+        self.winner_id = None
+        self.winner_score = 0
         print(f"[SERVER] Grid size: {grid_size}x{grid_size}")
         print(f"[SERVER] Server is up and running on port {self.port}")
 
     def handle_client_hello(self, client_address):
         """INIT handshake with client"""
+        if self.game_active:
 
-        # checks if player is already connected
-        if client_address in self.clients:
-            print(f"{client_address} already connected.")
+            # checks if player is already connected
+            if client_address in self.clients:
+                print(f"{client_address} already connected.")
+                return
+
+            # check if server is full
+            if len(self.clients) >= self.max_clients:
+                print(f"Server full. connection failed with {client_address}")
+                return
+
+            # add the new client
+            player_id = self.next_player_id
+            self.clients[client_address] = {
+                'player_id': player_id,
+                'seq_num': 0,
+                'last_heartbeat': time.time(),
+                'pos': (10 * (player_id + 1), 10 * (player_id + 1))  # just a placeholder
+            }
+            self.scores[player_id] = 0  # Initialize score for new player
+            self.next_player_id += 1
+            print(f"{client_address} connected. player_id {player_id}")
+
+            # respond with server hello message
+            payload = struct.pack('!B', player_id)  # as max is 4
+            response_packet = pack_packet(MessageType.SERVER_INIT_RESPONSE, 0, 0, get_current_timestamp_ms(),
+                                          payload)
+            self.socket.sendto(response_packet, client_address)
+        else:
+            print(f"Game over. connection Declined with {client_address}")
+            # send current state
+            self.send_current_state(client_address)
+            current_timestamp = get_current_timestamp_ms()
+            #send winner data
+            payload = struct.pack('!BH', self.winner_id, self.winner_score)
+            packet = pack_packet(MessageType.GAME_OVER, self.snapshot_id, 0, current_timestamp,
+                                 payload)
+            self.socket.sendto(packet, client_address)
+
             return
-
-        # check if server is full
-        if len(self.clients) >= self.max_clients:
-            print(f"Server full. connection failed with {client_address}")
-            return
-
-        # add the new client
-        player_id = self.next_player_id
-        self.clients[client_address] = {
-            'player_id': player_id,
-            'seq_num': 0,
-            'last_heartbeat': time.time(),
-            'pos': (10 * (player_id + 1), 10 * (player_id + 1))  # just a placeholder
-        }
-        self.scores[player_id] = 0  # Initialize score for new player
-        self.next_player_id += 1
-        print(f"{client_address} connected. player_id {player_id}")
-
-        # respond with server hello message
-        payload = struct.pack('!B', player_id)  # as max is 4
-        response_packet = pack_packet(MessageType.SERVER_INIT_RESPONSE, 0, 0, get_current_timestamp_ms(),
-                                      payload)
-        self.socket.sendto(response_packet, client_address)
 
     # updating client heartbeat
     def handle_client_heartbeat(self, client_address):
@@ -149,16 +163,16 @@ class GridServer:
         self.game_active = False
         
         # Find winner (highest score)
-        winner_id = 0
-        winner_score = 0
+
+
         for player_id, score in self.scores.items():
-            if score > winner_score:
-                winner_id = player_id
-                winner_score = score
+            if score > self.winner_score:
+                self.winner_id = player_id
+                self.winner_score = score
         
-        print(f"[GAME OVER] Winner: Player {winner_id} with score {winner_score}")
+        print(f"[GAME OVER] Winner: Player {self.winner_id} with score {self.winner_score}")
         
-        payload = struct.pack('!BH', winner_id, winner_score)
+        payload = struct.pack('!BH', self.winner_id, self.winner_score)
         current_timestamp = get_current_timestamp_ms()
         
         for clientAddress, clientData in self.clients.items():
@@ -199,6 +213,30 @@ class GridServer:
             packet = pack_packet(MessageType.SNAPSHOT, self.snapshot_id, clientData['seq_num'], current_timestamp,
                                  payload)
             self.socket.sendto(packet, clientAddress)
+
+
+    def send_current_state(self, client_address):
+        """Send current game state to a new client."""
+        current_timestamp = get_current_timestamp_ms()
+
+        # Pack grid state (400 bytes)
+        payload = bytes(self.grid_state)
+
+        # Pack player count and player data
+        num_players = len(self.clients)
+        payload += struct.pack('!B', num_players)
+
+        for clientData in self.clients.values():
+            player_id = clientData['player_id']
+            score = self.scores.get(player_id, 0)
+            curr_pos = clientData['pos']
+
+            # Pack: ID (1 byte), Score (2 bytes), X (4 bytes), Y (4 bytes) = 11 bytes
+            payload += struct.pack('!BHii', player_id, score, curr_pos[0], curr_pos[1])
+
+            packet = pack_packet(MessageType.SNAPSHOT, self.snapshot_id, clientData['seq_num'], current_timestamp,
+                                 payload)
+            self.socket.sendto(packet, client_address)
 
     def run(self):
         # self.socket.settimeout(0.001)

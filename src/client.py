@@ -41,7 +41,7 @@ class GridClient:
     GridClient class for managing the client-side of the game.
     """
 
-    def __init__(self, client_id=0, server_address=('127.0.0.1', 12000)):
+    def __init__(self, client_id=255, server_address=('127.0.0.1', 12000)):
         """Initialize client."""
         self.client_id = client_id
         self.server_address = server_address
@@ -182,12 +182,21 @@ class GridClient:
 
     def send_acquire_request(self, row, col):
         """Send ACQUIRE_REQUEST to claim a cell."""
-        if self.game_over:
-            return
-        payload = struct.pack('!BB', row, col)
-        packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, 0, get_current_timestamp_ms(), payload)
-        self.socket.sendto(packet, self.server_address)
-        print(f"[CLIENT] Sent ACQUIRE_REQUEST for cell ({row}, {col})")
+
+        ##### remove if condition (debugging purpose) #####
+        if self.client_id == 1:
+            for i in range(0 , 20):
+                for j in range(0 , 20):
+                    payload = struct.pack('!BB', i, j)
+                    packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, 0, get_current_timestamp_ms(), payload)
+                    self.socket.sendto(packet, self.server_address)
+        else:
+            if self.game_over:
+                return
+            payload = struct.pack('!BB', row, col)
+            packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, 0, get_current_timestamp_ms(), payload)
+            self.socket.sendto(packet, self.server_address)
+            print(f"[CLIENT] Sent ACQUIRE_REQUEST for cell ({row}, {col})")
 
     def update_visuals(self, dt):
         """
@@ -309,6 +318,7 @@ class GridClient:
         # Winner text
         big_font = pygame.font.Font(None, 48)
         if winner_id == self.client_id:
+
             text = "YOU WIN!"
         else:
             text = f"Player {winner_id} Wins!"
@@ -400,7 +410,7 @@ class GridClient:
 
 def main():
     parser = argparse.ArgumentParser(description="GridClash Client")
-    parser.add_argument("--id", type=int, default=0, help="Client ID")
+    parser.add_argument("--id", type=int, default=255, help="Client ID")
     parser.add_argument("--host", default="127.0.0.1", help="Server host")
     parser.add_argument("--port", type=int, default=12000, help="Server port")
     parser.add_argument("--heartbeat-interval", type=float, default=1.0, help="Heartbeat interval (seconds)")
