@@ -32,6 +32,7 @@ UNCLAIMED_ID = 255  # Special value indicating a cell has no owner
 class MessageType(IntEnum):
     """Message types for the GridClash protocol."""
 
+
     SNAPSHOT = 0  # Server → Client (grid state/update)
     HEARTBEAT = 1  # Client → Server (keep-alive)
     CLIENT_INIT = 2  # Client → Server (register)
@@ -39,7 +40,7 @@ class MessageType(IntEnum):
     ACQUIRE_REQUEST = 4  # Client → Server (row, col - request to claim a cell)
     GAME_OVER = 5  # Server → Client (winner_id, winner_score)
     NEW_GAME = 6  # client -> server (new game request)
-
+    SERVER_FULL = 7  # server -> client (server full)
 
 # used a namedtuple instead of class for simplicity
 packet = namedtuple(

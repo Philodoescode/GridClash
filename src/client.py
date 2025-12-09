@@ -102,7 +102,7 @@ class GridClient:
         # Connection tracking
         self.last_packet_time = time.time()
         self.connected = True
-
+        self.server_full = False
         # State Management (Phase 2)
         self.target_players = {}  # {player_id: (target_x, target_y)} -> Authoritative from server
         self.visual_players = {}  # {player_id: (curr_x, curr_y)} -> Smoothed for rendering
@@ -161,6 +161,7 @@ class GridClient:
 
     def handle_server_hello(self, data):
         """Process SERVER_HELLO response."""
+
         try:
             pkt, payload = unpack_packet(data)
             if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE and len(payload) >= 1:
@@ -355,26 +356,34 @@ class GridClient:
         for y in range(0, 600, CELL_SIZE):
             pygame.draw.line(self.screen, GRID_COLOR, (0, y), (SCREEN_WIDTH, y))
 
-        # 4. Players (cursors)
-        for p_id, (x, y) in self.visual_players.items():
-            color = PLAYER_COLORS.get(p_id, PLAYER_COLORS['default'])
-            pygame.draw.circle(self.screen, color, (int(x), int(y)), 10)
-            # Highlight self
-            if p_id == self.client_id:
-                pygame.draw.circle(self.screen, BLACK, (int(x), int(y)), 12, 2)
+        # # 4. Players (cursors)
+        # for p_id, (x, y) in self.visual_players.items():
+        #     color = PLAYER_COLORS.get(p_id, PLAYER_COLORS['default'])
+        #     pygame.draw.circle(self.screen, color, (int(x), int(y)), 10)
+        #     # Highlight self
+        #     if p_id == self.client_id:
+        #         pygame.draw.circle(self.screen, BLACK, (int(x), int(y)), 12, 2)
 
         # 5. Player Strip
         self.draw_player_strip()
 
-        # 6. Connection Status
-        if not self.connected:
-            self.draw_connection_lost()
 
-        # 7. Game Over Overlay
-        if self.game_over and self.winner_info:
-            self.draw_game_over_overlay()
+        # 6. Server Full Overlay
+        if self.server_full:
+            self.draw_server_full_overlay()
+        else:
+            # 7. Connection Status
+            if not self.connected:
+                self.draw_connection_lost()
+            # 8. Game Over Overlay
+            if self.game_over and self.winner_info:
+                self.draw_game_over_overlay()
 
-        # 8. Display Flip
+
+
+
+
+        # 9. Display Flip
         pygame.display.flip()
 
     def draw_player_strip(self):
@@ -572,6 +581,8 @@ class GridClient:
                                 self.handle_game_state_update(data)
                             elif pkt.msg_type == MessageType.GAME_OVER:
                                 self.handle_game_over(data)
+                            elif pkt.msg_type == MessageType.SERVER_FULL:
+                                self.handle_server_full(data)
                 except BlockingIOError:
                     # No more data available right now
                     pass
@@ -596,6 +607,35 @@ class GridClient:
             except Exception:
                 pass
             self.socket.close()
+
+    def handle_server_full(self, data):
+        """Process SERVER_FULL message."""
+        self.server_full = True
+        print("[CLIENT] Server is full. Please try again later.")
+
+
+    def draw_server_full_overlay(self):
+        """Draw server full screen."""
+        if not self.big_font:
+            return
+
+        # Semi-transparent overlay
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        self.screen.blit(overlay, (0, 0))
+
+        # Server full text
+        text = "SERVER IS FULL"
+        text_surface = self.big_font.render(text, True, (255, 100, 100))  # Red
+        text_rect = text_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 30))
+        self.screen.blit(text_surface, text_rect)
+
+        # Subtitle
+        subtitle = "Maximum 4 players reached"
+        subtitle_surface = self.font.render(subtitle, True, (200, 200, 200))
+        subtitle_rect = subtitle_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 20))
+        self.screen.blit(subtitle_surface, subtitle_rect)
+
 
 
 def main():

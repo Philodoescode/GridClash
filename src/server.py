@@ -58,7 +58,8 @@ class GridServer:
         self.next_player_id = 0
         self.snapshot_id = 0
         self.seq_num = 0
-
+        self.active_clients_ids = []
+        self.clients_pos = {}
         # Grid state: 400 bytes (20x20), each cell stores owner ID (255 = unclaimed)
         self.grid_state = bytearray([UNCLAIMED_ID] * (GRID_WIDTH * GRID_HEIGHT))
         self.scores = {}  # {player_id: score}
@@ -66,8 +67,17 @@ class GridServer:
         self.claimed_cells = 0
         self.winner_id = None
         self.winner_score = 0
+
+
         print(f"[SERVER] Grid size: {grid_size}x{grid_size}")
         print(f"[SERVER] Server is up and running on port {self.port}")
+
+    def get_available_player_id(self):
+        used_ids = self.active_clients_ids.copy()
+        for pid in range(self.max_clients):
+            if pid not in used_ids:
+                return pid
+        return None  # server full
 
     def handle_client_hello(self, client_address):
         """INIT handshake with client"""
@@ -79,28 +89,34 @@ class GridServer:
                 return
 
             # check if server is full
-            if len(self.clients) >= self.max_clients:
-                print(f"Server full. connection failed with {client_address}")
+            if len(self.active_clients_ids) >= self.max_clients:
+                print(f"Server full. connection declined with {client_address}")
+                payload = struct.pack('!B', 0)
+
+                response_packet = pack_packet(MessageType.SERVER_FULL, 0, 0, get_current_timestamp_ms(),
+                                              payload)
+                self.socket.sendto(response_packet, client_address)
                 return
             # find id of disconnected player to give
-            empty_id = self.next_player_id
-            if self.next_player_id >= self.max_clients:
-                for i in range (0, self.max_clients):
-                    if i not in self.clients:
-                        empty_id = i
-                        break
-                self.next_player_id = empty_id
-            # add the new client
+            player_id = self.get_available_player_id()
+
+
+            if player_id in self.clients_pos:
+                pos = self.clients_pos[player_id]
             else:
-                player_id = self.next_player_id
+                pos = PLAYER_POSITIONS.get(player_id, PLAYER_POSITIONS['default'])
+
+            self.clients_pos[player_id] = pos
 
             self.clients[client_address] = {
                 'player_id': player_id,
                 'seq_num': 0,
                 'last_heartbeat': time.time(),
-                'pos': PLAYER_POSITIONS.get(player_id, PLAYER_POSITIONS['default']) # starting position
+                'pos': pos # starting position
             }
-            self.scores[player_id] = 0  # Initialize score for new player
+            self.active_clients_ids.append(player_id)
+            if player_id not in self.scores:
+                self.scores[player_id] = 0
             self.next_player_id += 1
             print(f"{client_address} connected. player_id {player_id}")
 
@@ -142,6 +158,7 @@ class GridServer:
         # remove timed out clients
         for clientAddress in timed_out_clients:
             print(f"{clientAddress} timed out")
+            self.active_clients_ids.remove(self.clients[clientAddress]['player_id'])
             del self.clients[clientAddress]
 
     def handle_acquire_request(self, client_address, payload):
@@ -173,7 +190,9 @@ class GridServer:
         self.grid_state[index] = player_id
         self.scores[player_id] = self.scores.get(player_id, 0) + 1
         self.claimed_cells += 1
-        
+
+        #update client position
+        self.clients[client_address]['pos'] = (col, row)
         print(f"[ACQUIRE] Player {player_id} claimed cell ({row}, {col}). Score: {self.scores[player_id]}")
         
         # Check for game over
@@ -337,6 +356,8 @@ class GridServer:
         self.claimed_cells = 0
         self.winner_id = None
         self.winner_score = 0
+        self.clients_pos = {}
+
 
     def handle_new_game(self):
         if self.game_active:
@@ -345,13 +366,15 @@ class GridServer:
         print("[SERVER] Processing NEW_GAME request...")
         # Store current client addresses before reset
         connected_clients = list(self.clients.keys())
+
+
         for client_addr in connected_clients:
             player_id = self.clients[client_addr]['player_id']
             self.clients[client_addr] = {
                 'player_id': player_id,
                 'seq_num': 0,
                 'last_heartbeat': time.time(),
-                'pos': (10 * (player_id + 1), 10 * (player_id + 1))
+                'pos': PLAYER_POSITIONS.get(player_id, PLAYER_POSITIONS['default'])
             }
             self.scores[player_id] = 0
             #self.next_player_id += 1
@@ -367,11 +390,13 @@ class GridServer:
             self.socket.sendto(response_packet, client_addr)
             print(f"[SERVER] Re-assigned Player {player_id} to {client_addr}")
 
+            # Reset server state
+        self.reset_server()
             # Broadcast initial clean state immediately
         self.state_broadcast()
         print("[SERVER] New game started and broadcasted to all clients")
 
-        self.reset_server()
+
 
 
 def main():
