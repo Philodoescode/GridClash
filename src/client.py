@@ -5,80 +5,22 @@ import socket
 import struct
 import sys
 import time
-from collections import deque
-
-# Pygame Import (Phase 1)
 import pygame
+from collections import deque
+from src.protocol import unpack_packet, get_current_timestamp_ms, pack_packet, MessageType, GRID_WIDTH, GRID_HEIGHT, UNCLAIMED_ID
+from src.server import MAX_PACKET_SIZE
+from src.constants import  SCREEN_WIDTH, PLAYER_STRIP_HEIGHT, SCREEN_HEIGHT, CELL_SIZE, WHITE, BLACK, GRAY, LIGHT_GRAY, DARK_GRAY, GRID_COLOR, BUTTON_COLOR, BUTTON_HOVER_COLOR, STRIP_BG_COLOR, PLAYER_COLORS, CONNECTION_TIMEOUT
+from src.UI_elements import Button
+
+
+
 
 # import from parent directory
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from src.protocol import unpack_packet, get_current_timestamp_ms, pack_packet, MessageType, GRID_WIDTH, GRID_HEIGHT, UNCLAIMED_ID
-from src.server import MAX_PACKET_SIZE
 
-# --- Visualization Constants (Phase 1) ---
-SCREEN_WIDTH = 600
-PLAYER_STRIP_HEIGHT = 100
-SCREEN_HEIGHT = 600 + PLAYER_STRIP_HEIGHT  # Grid + player strip
-GRID_SIZE = 20  # 20x20 Grid
-CELL_SIZE = 600 // GRID_SIZE  # Grid cell size
-
-# Colors
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-GRAY = (128, 128, 128)
-LIGHT_GRAY = (200, 200, 200)
-DARK_GRAY = (50, 50, 50)
-GRID_COLOR = (200, 200, 200)
-BUTTON_COLOR = (70, 130, 180)  # Steel blue
-BUTTON_HOVER_COLOR = (100, 149, 237)  # Cornflower blue
-STRIP_BG_COLOR = (240, 240, 240)
-
-PLAYER_COLORS = {
-    0: (255, 0, 0),      # Red
-    1: (0, 0, 255),      # Blue
-    2: (0, 255, 0),      # Green
-    3: (255, 255, 0),    # Yellow
-    'default': (100, 100, 100)  # Gray for unknown IDs
-}
-
-# Connection timeout
-CONNECTION_TIMEOUT = 10.0  # seconds
-
-
-class Button:
-    """Simple button class for UI."""
-
-    def __init__(self, x, y, width, height, text, font):
-        self.rect = pygame.Rect(x, y, width, height)
-        self.text = text
-        self.font = font
-        self.hovered = False
-
-    def is_hovered(self, mouse_pos):
-        """Check if mouse is over button."""
-        self.hovered = self.rect.collidepoint(mouse_pos)
-        return self.hovered
-
-    def is_clicked(self, mouse_pos):
-        """Check if button was clicked."""
-        return self.rect.collidepoint(mouse_pos)
-
-    def draw(self, surface, mouse_pos):
-        """Draw the button."""
-        self.is_hovered(mouse_pos)
-        color = BUTTON_HOVER_COLOR if self.hovered else BUTTON_COLOR
-
-        # Draw button background
-        pygame.draw.rect(surface, color, self.rect)
-        pygame.draw.rect(surface, WHITE, self.rect, 2)  # Border
-
-        # Draw text
-        text_surface = self.font.render(self.text, True, WHITE)
-        text_rect = text_surface.get_rect(center=self.rect.center)
-        surface.blit(text_surface, text_rect)
 
 
 
