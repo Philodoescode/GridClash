@@ -129,7 +129,7 @@ class GridClient:
         """Check if move is legal."""
         # Check if cell is unclaimed
         index = row * GRID_WIDTH + col
-        if self.grid_state[index] != UNCLAIMED_ID:
+        if self.grid_state[index] != UNCLAIMED_ID and self.grid_state[index] != self.client_id:
             print(f"[CLIENT] Cell ({row}, {col}) is already claimed")
             return False
 
