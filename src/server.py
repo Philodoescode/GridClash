@@ -179,12 +179,17 @@ class GridServer:
             return
         
         index = row * GRID_WIDTH + col
-        
+        player_id = self.clients[client_address]['player_id']
+        if self.grid_state[index] == self.clients[client_address]['player_id']:
+            self.clients[client_address]['pos'] = (col, row)
+            self.clients_pos[player_id] = (col, row)
+            return
+
         # Check if cell is unclaimed (FCFS - first packet wins)
         if self.grid_state[index] != UNCLAIMED_ID:
             return
         
-        player_id = self.clients[client_address]['player_id']
+
         
         # Claim the cell
         self.grid_state[index] = player_id
@@ -193,20 +198,25 @@ class GridServer:
 
         #update client position
         self.clients[client_address]['pos'] = (col, row)
+        self.clients_pos[player_id] = (col, row)
         print(f"[ACQUIRE] Player {player_id} claimed cell ({row}, {col}). Score: {self.scores[player_id]}")
         
         # Check for game over
         if self.claimed_cells >= GRID_WIDTH * GRID_HEIGHT:
             self.broadcast_game_over()
+        for clientAddress, clientData in self.clients.items():
+            id = clientData['player_id']
+            if self.scores[id] >= GRID_WIDTH * GRID_HEIGHT / 2:
+                self.broadcast_game_over()
 
     def acquire_cell(self, col, row, player_id):
         index = row * GRID_WIDTH + col
-        if self.grid_state[index] == UNCLAIMED_ID:
-            self.grid_state[index] = player_id
-            self.scores[player_id] = self.scores.get(player_id, 0) + 1
-            self.claimed_cells += 1
-            return True
-        return False
+
+        self.grid_state[index] = player_id
+        self.scores[player_id] = self.scores.get(player_id, 0) + 1
+        self.claimed_cells += 1
+
+
 
     def broadcast_game_over(self):
         """Broadcast GAME_OVER to all clients."""
@@ -378,9 +388,9 @@ class GridServer:
             }
             self.scores[player_id] = 0
             #self.next_player_id += 1
-
+            pos_x, pos_y = PLAYER_POSITIONS.get(player_id, PLAYER_POSITIONS['default'])
             # Send SERVER_INIT_RESPONSE with new ID
-            payload = struct.pack('!B', player_id)
+            payload = struct.pack('!Bii', player_id, pos_x, pos_y)
             response_packet = pack_packet(
                 MessageType.SERVER_INIT_RESPONSE,
                 0, 0,
