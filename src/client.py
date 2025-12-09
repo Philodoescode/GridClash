@@ -168,15 +168,17 @@ class GridClient:
 
         try:
             pkt, payload = unpack_packet(data)
-            if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE and len(payload) >= 1:
+            if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE and len(payload) >= 9:
                 assigned_id, pos_x, pos_y = struct.unpack('!Bii', payload[:9])
                 self.pos_x = pos_x
                 self.pos_y = pos_y
                 print(f"[CLIENT {self.client_id}] Server assigned ID: {assigned_id}, pos: ({pos_x}, {pos_y})")
-                if self.waiting_for_new_game:
+                if self.game_over:  # Check if the client was in Game Over state
                     self.reset_game_state()
-                    self.waiting_for_new_game = False
-                    print(f"[CLIENT {self.client_id}] New game confirmed, state reset")
+                    print(f"[CLIENT {self.client_id}] Received SERVER_INIT_RESPONSE, game state reset")
+
+                self.waiting_for_new_game = False
+
                 self.client_id = assigned_id
 
                 # Update window title if graphics are initialized
