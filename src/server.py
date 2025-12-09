@@ -1,5 +1,6 @@
 """Server for GridClash game."""
 import os
+import random
 import socket
 import struct
 import sys
@@ -17,6 +18,14 @@ DEFAULT_PORT = 12000
 GRID_SIZE = 20
 MAX_PACKET_SIZE = 1200
 
+
+PLAYER_POSITIONS = {
+    0: (random.randint(2, 8), random.randint(2, 8)),      # Top Left
+    1: (random.randint(12, 18), random.randint(2, 8)),      # Top Right
+    2: (random.randint(2, 8), random.randint(12, 18)),      # Bottom Left
+    3: (random.randint(12, 18), random.randint(12, 18)),    # Bottom Right
+    'default': (10, 10)  # middle for unknown IDs
+}
 
 class GridServer:
     """
@@ -73,24 +82,37 @@ class GridServer:
             if len(self.clients) >= self.max_clients:
                 print(f"Server full. connection failed with {client_address}")
                 return
-
+            # find id of disconnected player to give
+            empty_id = self.next_player_id
+            if self.next_player_id >= self.max_clients:
+                for i in range (0, self.max_clients):
+                    if i not in self.clients:
+                        empty_id = i
+                        break
+                self.next_player_id = empty_id
             # add the new client
-            player_id = self.next_player_id
+            else:
+                player_id = self.next_player_id
+
             self.clients[client_address] = {
                 'player_id': player_id,
                 'seq_num': 0,
                 'last_heartbeat': time.time(),
-                'pos': (10 * (player_id + 1), 10 * (player_id + 1))  # just a placeholder
+                'pos': PLAYER_POSITIONS.get(player_id, PLAYER_POSITIONS['default']) # starting position
             }
             self.scores[player_id] = 0  # Initialize score for new player
             self.next_player_id += 1
             print(f"{client_address} connected. player_id {player_id}")
 
             # respond with server hello message
-            payload = struct.pack('!B', player_id)  # as max is 4
+            pos_x, pos_y = self.clients[client_address]['pos']
+
+            payload = struct.pack('!Bii', player_id, pos_x, pos_y) # 9 bytes
+            #payload = struct.pack('!B', player_id)  # as max is 4
             response_packet = pack_packet(MessageType.SERVER_INIT_RESPONSE, 0, 0, get_current_timestamp_ms(),
                                           payload)
             self.socket.sendto(response_packet, client_address)
+            self.acquire_cell(pos_x, pos_y, player_id)
         else:
             print(f"Game over. connection Declined with {client_address}")
             # send current state
@@ -157,6 +179,15 @@ class GridServer:
         # Check for game over
         if self.claimed_cells >= GRID_WIDTH * GRID_HEIGHT:
             self.broadcast_game_over()
+
+    def acquire_cell(self, col, row, player_id):
+        index = row * GRID_WIDTH + col
+        if self.grid_state[index] == UNCLAIMED_ID:
+            self.grid_state[index] = player_id
+            self.scores[player_id] = self.scores.get(player_id, 0) + 1
+            self.claimed_cells += 1
+            return True
+        return False
 
     def broadcast_game_over(self):
         """Broadcast GAME_OVER to all clients."""

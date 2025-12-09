@@ -81,6 +81,8 @@ class Button:
         surface.blit(text_surface, text_rect)
 
 
+
+
 class GridClient:
     """
     GridClient class for managing the client-side of the game.
@@ -108,7 +110,8 @@ class GridClient:
         # Snapshot/sequence tracking to detect stale/duplicate packets
         self.last_snapshot_id = -1
         self.last_seq_num = -1
-
+        self.pos_x = 0
+        self.pos_y = 0
         # Grid state (Phase 3)
         self.grid_state = bytearray([UNCLAIMED_ID] * (GRID_WIDTH * GRID_HEIGHT))
         self.player_scores = {}  # {player_id: score}
@@ -121,6 +124,27 @@ class GridClient:
         self.font = None
         self.big_font = None
         self.new_game_button = None
+
+    def is_legal_move(self, row, col):
+        """Check if move is legal."""
+        # Check if cell is unclaimed
+        index = row * GRID_WIDTH + col
+        if self.grid_state[index] != UNCLAIMED_ID:
+            print(f"[CLIENT] Cell ({row}, {col}) is already claimed")
+            return False
+
+        # check if the cell is adjacent (one step up, down, left, or right)
+        dx = abs(col - self.pos_x) # change in x/column
+        dy = abs(row - self.pos_y) # change in y/row
+        # dx  = 1, dy = 0 -> move right
+        if  not (((dx == 1 and dy == 0) or
+                 (dx == 0 and dy == 1))):
+            print(f"[CLIENT] Move to ({row}, {col}) is not adjacent to current position ({self.pos_x}, {self.pos_y}) , dx: {dx}, dy: {dy}")
+            return False
+
+
+        return True
+        pass
 
     def send_hello(self):
         """Send hello message to server."""
@@ -140,8 +164,10 @@ class GridClient:
         try:
             pkt, payload = unpack_packet(data)
             if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE and len(payload) >= 1:
-                assigned_id = struct.unpack('!B', payload[:1])[0]
-                print(f"[CLIENT {self.client_id}] Server assigned ID: {assigned_id}")
+                assigned_id, pos_x, pos_y = struct.unpack('!Bii', payload[:9])
+                self.pos_x = pos_x
+                self.pos_y = pos_y
+                print(f"[CLIENT {self.client_id}] Server assigned ID: {assigned_id}, pos: ({pos_x}, {pos_y})")
                 if self.waiting_for_new_game:
                     self.reset_game_state()
                     self.waiting_for_new_game = False
@@ -244,20 +270,17 @@ class GridClient:
 
     def send_acquire_request(self, row, col):
         """Send ACQUIRE_REQUEST to claim a cell."""
-        if self.client_id == 1:
-            for i in range(0, 20):
-                for j in range(0, 20):
-                    payload = struct.pack('!BB', i, j)
-                    packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, 0, get_current_timestamp_ms(), payload)
-                    self.socket.sendto(packet, self.server_address)
-                    print(f"[CLIENT] {self.client_id} Sent ACQUIRE_REQUEST for cell ({i}, {j})")
+
         if self.game_over:
             return
-
+        if not self.is_legal_move(row, col):
+            print(f"[CLIENT] Illegal move: ({row}, {col}), pos: ({self.pos_x}, {self.pos_y})")
+            return
         # Bounds check
         if not (0 <= row < GRID_HEIGHT and 0 <= col < GRID_WIDTH):
             return
-
+        self.pos_x = col
+        self.pos_y = row
         payload = struct.pack('!BB', row, col)
         packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, 0, get_current_timestamp_ms(), payload)
         self.socket.sendto(packet, self.server_address)
@@ -310,6 +333,21 @@ class GridClient:
                     color = PLAYER_COLORS.get(owner_id, PLAYER_COLORS['default'])
                     rect = (col * CELL_SIZE, row * CELL_SIZE, CELL_SIZE, CELL_SIZE)
                     pygame.draw.rect(self.screen, color, rect)
+
+
+        # 2.5 Highlight current player position
+        highlight_color = (255, 255, 255, 120)  # semi-transparent white overlay
+        overlay = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
+        pygame.draw.rect(overlay, highlight_color, overlay.get_rect())
+        self.screen.blit(overlay, (self.pos_x * CELL_SIZE, self.pos_y * CELL_SIZE))
+        highlight_rect = (
+            self.pos_x * CELL_SIZE,
+            self.pos_y * CELL_SIZE,
+            CELL_SIZE,
+            CELL_SIZE
+        )
+        pygame.draw.rect(self.screen, (255, 255, 255), highlight_rect, 4)  # white border
+        pygame.draw.rect(self.screen, (0, 0, 0), highlight_rect, 2)
 
         # 3. Grid Lines
         for x in range(0, SCREEN_WIDTH, CELL_SIZE):
