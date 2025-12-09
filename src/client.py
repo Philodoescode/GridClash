@@ -5,6 +5,7 @@ import socket
 import struct
 import sys
 import time
+from collections import deque
 
 # Pygame Import (Phase 1)
 import pygame
@@ -19,22 +20,66 @@ from src.server import MAX_PACKET_SIZE
 
 # --- Visualization Constants (Phase 1) ---
 SCREEN_WIDTH = 600
-SCREEN_HEIGHT = 600
+PLAYER_STRIP_HEIGHT = 100
+SCREEN_HEIGHT = 600 + PLAYER_STRIP_HEIGHT  # Grid + player strip
 GRID_SIZE = 20  # 20x20 Grid
-CELL_SIZE = SCREEN_WIDTH // GRID_SIZE
+CELL_SIZE = 600 // GRID_SIZE  # Grid cell size
 
 # Colors
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
+GRAY = (128, 128, 128)
+LIGHT_GRAY = (200, 200, 200)
+DARK_GRAY = (50, 50, 50)
 GRID_COLOR = (200, 200, 200)
+BUTTON_COLOR = (70, 130, 180)  # Steel blue
+BUTTON_HOVER_COLOR = (100, 149, 237)  # Cornflower blue
+STRIP_BG_COLOR = (240, 240, 240)
 
 PLAYER_COLORS = {
     0: (255, 0, 0),      # Red
     1: (0, 0, 255),      # Blue
     2: (0, 255, 0),      # Green
     3: (255, 255, 0),    # Yellow
-    'default': (100, 100, 100) # Gray for unknown IDs
+    'default': (100, 100, 100)  # Gray for unknown IDs
 }
+
+# Connection timeout
+CONNECTION_TIMEOUT = 10.0  # seconds
+
+
+class Button:
+    """Simple button class for UI."""
+
+    def __init__(self, x, y, width, height, text, font):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.text = text
+        self.font = font
+        self.hovered = False
+
+    def is_hovered(self, mouse_pos):
+        """Check if mouse is over button."""
+        self.hovered = self.rect.collidepoint(mouse_pos)
+        return self.hovered
+
+    def is_clicked(self, mouse_pos):
+        """Check if button was clicked."""
+        return self.rect.collidepoint(mouse_pos)
+
+    def draw(self, surface, mouse_pos):
+        """Draw the button."""
+        self.is_hovered(mouse_pos)
+        color = BUTTON_HOVER_COLOR if self.hovered else BUTTON_COLOR
+
+        # Draw button background
+        pygame.draw.rect(surface, color, self.rect)
+        pygame.draw.rect(surface, WHITE, self.rect, 2)  # Border
+
+        # Draw text
+        text_surface = self.font.render(self.text, True, WHITE)
+        text_rect = text_surface.get_rect(center=self.rect.center)
+        surface.blit(text_surface, text_rect)
+
 
 class GridClient:
     """
@@ -43,18 +88,22 @@ class GridClient:
 
     def __init__(self, client_id=255, server_address=('127.0.0.1', 12000)):
         """Initialize client."""
+        self.waiting_for_new_game = False
         self.client_id = client_id
         self.server_address = server_address
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # self.socket.bind(('127.0.0.1', 12001)) # bind to a specific port for testing
         self.last_heartbeat_time = time.time()
         self.heartbeat_interval = 1.0
         self.packet_count = 0
-        self.latencies = []
+        self.latencies = deque(maxlen=1000)  # Limit memory usage
+
+        # Connection tracking
+        self.last_packet_time = time.time()
+        self.connected = True
 
         # State Management (Phase 2)
-        self.target_players = {}   # {player_id: (target_x, target_y)} -> Authoritative from server
-        self.visual_players = {}   # {player_id: (curr_x, curr_y)}     -> Smoothed for rendering
+        self.target_players = {}  # {player_id: (target_x, target_y)} -> Authoritative from server
+        self.visual_players = {}  # {player_id: (curr_x, curr_y)} -> Smoothed for rendering
 
         # Snapshot/sequence tracking to detect stale/duplicate packets
         self.last_snapshot_id = -1
@@ -70,6 +119,8 @@ class GridClient:
         self.screen = None
         self.clock = None
         self.font = None
+        self.big_font = None
+        self.new_game_button = None
 
     def send_hello(self):
         """Send hello message to server."""
@@ -83,7 +134,6 @@ class GridClient:
         payload = struct.pack('!B', self.client_id)
         packet = pack_packet(MessageType.HEARTBEAT, 0, 0, get_current_timestamp_ms(), payload)
         self.socket.sendto(packet, self.server_address)
-        # print(f"[CLIENT {self.client_id}] Sent HEARTBEAT")
 
     def handle_server_hello(self, data):
         """Process SERVER_HELLO response."""
@@ -92,6 +142,10 @@ class GridClient:
             if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE and len(payload) >= 1:
                 assigned_id = struct.unpack('!B', payload[:1])[0]
                 print(f"[CLIENT {self.client_id}] Server assigned ID: {assigned_id}")
+                if self.waiting_for_new_game:
+                    self.reset_game_state()
+                    self.waiting_for_new_game = False
+                    print(f"[CLIENT {self.client_id}] New game confirmed, state reset")
                 self.client_id = assigned_id
 
                 # Update window title if graphics are initialized
@@ -103,7 +157,6 @@ class GridClient:
     def handle_game_state_update(self, data):
         """Process game state update (snapshots)."""
         recv_ts_ms = get_current_timestamp_ms()
-
         try:
             packet, payload = unpack_packet(data)
 
@@ -111,9 +164,7 @@ class GridClient:
             if packet.msg_type != MessageType.SNAPSHOT:
                 return
 
-            # Stale/duplicate checks:
-            # - If snapshot_id < last_snapshot_id => older snapshot
-            # - If same snapshot_id but seq_num <= last_seq_num => duplicate/old
+            # Stale/duplicate checks
             if packet.snapshot_id < self.last_snapshot_id:
                 return
             if packet.snapshot_id == self.last_snapshot_id and packet.seq_num <= self.last_seq_num:
@@ -128,43 +179,54 @@ class GridClient:
             latency = recv_ts_ms - packet.server_timestamp
             self.latencies.append(latency)
 
-            # New Payload Structure:
-            # 1. Grid data: 400 bytes (20x20 flat array)
-            # 2. Player count: 1 byte
-            # 3. Per player: ID (!B), Score (!H), X (!i), Y (!i) = 11 bytes each
-            
-            GRID_SIZE = GRID_WIDTH * GRID_HEIGHT  # 400
-            
-            if len(payload) < GRID_SIZE + 1:
+            # Update connection time
+            self.last_packet_time = time.time()
+            self.connected = True
+
+            # Parse payload
+            GRID_SIZE_BYTES = GRID_WIDTH * GRID_HEIGHT  # 400
+            if len(payload) < GRID_SIZE_BYTES + 1:
                 return  # Malformed payload
-            
-            self.grid_state = bytearray(payload[:GRID_SIZE])
-            
-            num_players = payload[GRID_SIZE]
-            offset = GRID_SIZE + 1
-            
+
+            self.grid_state = bytearray(payload[:GRID_SIZE_BYTES])
+            num_players = payload[GRID_SIZE_BYTES]
+            offset = GRID_SIZE_BYTES + 1
+
             BYTES_PER_PLAYER = 11  # ID(1) + Score(2) + X(4) + Y(4)
-            
+
+            # Track which players are in this update
+            current_players = set()
+
             for _ in range(num_players):
                 if offset + BYTES_PER_PLAYER <= len(payload):
                     p_id, score, pos_x, pos_y = struct.unpack('!BHii', payload[offset:offset + BYTES_PER_PLAYER])
-                    
+
                     # Update authoritative state (target) and scores
                     self.target_players[p_id] = (pos_x, pos_y)
                     self.player_scores[p_id] = score
-                    
+                    current_players.add(p_id)
+
                     # If this is the first time seeing this player, snap visual to target immediately
                     if p_id not in self.visual_players:
                         self.visual_players[p_id] = (float(pos_x), float(pos_y))
+
                     offset += BYTES_PER_PLAYER
                 else:
                     break
+
+            # Remove disconnected players
+            for p_id in list(self.visual_players.keys()):
+                if p_id not in current_players:
+                    del self.visual_players[p_id]
+                    if p_id in self.target_players:
+                        del self.target_players[p_id]
+                    if p_id in self.player_scores:
+                        del self.player_scores[p_id]
 
             # Periodic logging
             if self.packet_count % 60 == 0 and self.latencies:
                 avg = sum(self.latencies) / len(self.latencies)
                 print(f"[NET] Packets: {self.packet_count}, Avg Latency: {avg:.2f} ms")
-
         except Exception as e:
             print(f"Error unpacking packet: {e}")
 
@@ -182,56 +244,46 @@ class GridClient:
 
     def send_acquire_request(self, row, col):
         """Send ACQUIRE_REQUEST to claim a cell."""
-
-        ##### remove if condition (debugging purpose) #####
         if self.client_id == 1:
-            for i in range(0 , 20):
-                for j in range(0 , 20):
+            for i in range(0, 20):
+                for j in range(0, 20):
                     payload = struct.pack('!BB', i, j)
                     packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, 0, get_current_timestamp_ms(), payload)
                     self.socket.sendto(packet, self.server_address)
-        else:
-            if self.game_over:
-                return
-            payload = struct.pack('!BB', row, col)
-            packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, 0, get_current_timestamp_ms(), payload)
-            self.socket.sendto(packet, self.server_address)
-            print(f"[CLIENT] Sent ACQUIRE_REQUEST for cell ({row}, {col})")
+                    print(f"[CLIENT] {self.client_id} Sent ACQUIRE_REQUEST for cell ({i}, {j})")
+        if self.game_over:
+            return
+
+        # Bounds check
+        if not (0 <= row < GRID_HEIGHT and 0 <= col < GRID_WIDTH):
+            return
+
+        payload = struct.pack('!BB', row, col)
+        packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, 0, get_current_timestamp_ms(), payload)
+        self.socket.sendto(packet, self.server_address)
+        print(f"[CLIENT] Sent ACQUIRE_REQUEST for cell ({row}, {col})")
 
     def update_visuals(self, dt):
         """
         Interpolate visual positions towards target positions.
         dt: Time delta in seconds since last frame.
         """
-        # Smoothing factor: Higher = snappier, Lower = smoother/laggier
-        # Using a frame-rate independent decay formula or simple lerp factor
-        # SIMPLE LERP FACTOR adjusted for dt:
-        # A common simple approach: factor = 1 - pow(decay, dt)
-        # Let's use a simple constant speed or factor for now.
-        
-        SMOOTHING_SPEED = 10.0 # units per second? No, simpler to use t-value interpolation
-        
-        # t = 1 - pow(0.01, dt) # Moves 99% of the way in 1 second
-        # Let's try a distinct factor:
-        lerp_factor = 10.0 * dt
+        SMOOTHING_SPEED = 10.0
+        lerp_factor = SMOOTHING_SPEED * dt
         if lerp_factor > 1.0:
             lerp_factor = 1.0
 
         for p_id, target_pos in self.target_players.items():
             tx, ty = target_pos
-            
             if p_id not in self.visual_players:
                 self.visual_players[p_id] = (float(tx), float(ty))
                 continue
 
             vx, vy = self.visual_players[p_id]
-            
             # LERP
             new_vx = vx + (tx - vx) * lerp_factor
             new_vy = vy + (ty - vy) * lerp_factor
-            
             self.visual_players[p_id] = (new_vx, new_vy)
-
 
     def init_graphics(self):
         """Initialize Pygame graphics (Phase 3)."""
@@ -240,6 +292,7 @@ class GridClient:
         pygame.display.set_caption(f"GridClash - Player {self.client_id}")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.Font(None, 24)
+        self.big_font = pygame.font.Font(None, 48)
 
     def draw_game(self):
         """Render the game state (Phase 3)."""
@@ -260,8 +313,8 @@ class GridClient:
 
         # 3. Grid Lines
         for x in range(0, SCREEN_WIDTH, CELL_SIZE):
-            pygame.draw.line(self.screen, GRID_COLOR, (x, 0), (x, SCREEN_HEIGHT))
-        for y in range(0, SCREEN_HEIGHT, CELL_SIZE):
+            pygame.draw.line(self.screen, GRID_COLOR, (x, 0), (x, 600))
+        for y in range(0, 600, CELL_SIZE):
             pygame.draw.line(self.screen, GRID_COLOR, (0, y), (SCREEN_WIDTH, y))
 
         # 4. Players (cursors)
@@ -272,65 +325,157 @@ class GridClient:
             if p_id == self.client_id:
                 pygame.draw.circle(self.screen, BLACK, (int(x), int(y)), 12, 2)
 
-        # 5. Scoreboard
-        self.draw_scoreboard()
+        # 5. Player Strip
+        self.draw_player_strip()
 
-        # 6. Game Over Overlay
+        # 6. Connection Status
+        if not self.connected:
+            self.draw_connection_lost()
+
+        # 7. Game Over Overlay
         if self.game_over and self.winner_info:
             self.draw_game_over_overlay()
 
-        # 7. Display Flip
+        # 8. Display Flip
         pygame.display.flip()
 
-    def draw_scoreboard(self):
-        """Draw score overlay in top-left corner."""
-        if not self.font:
+    def draw_player_strip(self):
+        """Draw horizontal player strip below the grid."""
+        strip_y = 600
+
+        # Background
+        pygame.draw.rect(self.screen, STRIP_BG_COLOR, (0, strip_y, SCREEN_WIDTH, PLAYER_STRIP_HEIGHT))
+
+        # Dividing lines
+        pygame.draw.line(self.screen, DARK_GRAY, (0, strip_y), (SCREEN_WIDTH, strip_y), 2)
+
+        # Get sorted player list (max 4)
+        players = sorted(self.player_scores.keys())[:4]
+        if not players:
             return
-        
-        y_offset = 10
-        for p_id in sorted(self.player_scores.keys()):
-            score = self.player_scores[p_id]
+
+        slot_width = SCREEN_WIDTH // 4
+
+        for idx, p_id in enumerate(players):
+            x_start = idx * slot_width
+            x_center = x_start + slot_width // 2
+
+            # Player color indicator
             color = PLAYER_COLORS.get(p_id, PLAYER_COLORS['default'])
-            # Create label
-            label = f"P{p_id}: {score}"
+            indicator_rect = (x_start + 10, strip_y + 10, 40, 40)
+            pygame.draw.rect(self.screen, color, indicator_rect)
+            pygame.draw.rect(self.screen, BLACK, indicator_rect, 2)
+
+            # Player cursor icon
+            pygame.draw.circle(self.screen, color, (x_start + 30, strip_y + 30), 8)
             if p_id == self.client_id:
-                label += " (You)"
-            text_surface = self.font.render(label, True, color)
-            # Draw background for readability
-            bg_rect = text_surface.get_rect(topleft=(10, y_offset))
-            bg_rect.inflate_ip(6, 2)
-            pygame.draw.rect(self.screen, (255, 255, 255, 200), bg_rect)
-            self.screen.blit(text_surface, (10, y_offset))
-            y_offset += 22
+                pygame.draw.circle(self.screen, BLACK, (x_start + 30, strip_y + 30), 10, 2)
+
+            # Player label
+            if p_id == self.client_id:
+                label = f"Player {p_id} (You)"
+            else:
+                label = f"Player {p_id}"
+
+            label_surface = self.font.render(label, True, BLACK)
+            self.screen.blit(label_surface, (x_start + 60, strip_y + 15))
+
+            # Score
+            score = self.player_scores.get(p_id, 0)
+            score_text = f"Score: {score}"
+            score_surface = self.font.render(score_text, True, DARK_GRAY)
+            self.screen.blit(score_surface, (x_start + 60, strip_y + 45))
+
+            # Vertical divider (except for last player)
+            if idx < len(players) - 1:
+                pygame.draw.line(self.screen, LIGHT_GRAY,
+                               (x_start + slot_width, strip_y),
+                               (x_start + slot_width, strip_y + PLAYER_STRIP_HEIGHT))
+
+    def draw_connection_lost(self):
+        """Draw connection lost indicator."""
+        text = "Connection Lost..."
+        text_surface = self.font.render(text, True, (255, 0, 0))
+        text_rect = text_surface.get_rect(topright=(SCREEN_WIDTH - 10, 10))
+
+        # Background
+        bg_rect = text_rect.inflate(10, 4)
+        pygame.draw.rect(self.screen, (255, 255, 200), bg_rect)
+        self.screen.blit(text_surface, text_rect)
 
     def draw_game_over_overlay(self):
-        """Draw game over screen."""
-        if not self.font or not self.winner_info:
+        """Draw game over screen with New Game button."""
+        if not self.big_font or not self.winner_info:
             return
-        
+
         winner_id, winner_score = self.winner_info
-        
+
         # Semi-transparent overlay
         overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 180))
         self.screen.blit(overlay, (0, 0))
-        
-        # Winner text
-        big_font = pygame.font.Font(None, 48)
-        if winner_id == self.client_id:
 
+        # Winner text
+        if winner_id == self.client_id:
             text = "YOU WIN!"
+            text_color = (50, 255, 50)  # Bright green
         else:
             text = f"Player {winner_id} Wins!"
-        text_surface = big_font.render(text, True, (255, 255, 255))
-        text_rect = text_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 30))
+            text_color = (255, 255, 255)
+
+        text_surface = self.big_font.render(text, True, text_color)
+        text_rect = text_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 80))
         self.screen.blit(text_surface, text_rect)
-        
+
         # Score text
-        score_text = f"Score: {winner_score}"
+        score_text = f"Final Score: {winner_score}"
         score_surface = self.font.render(score_text, True, (200, 200, 200))
-        score_rect = score_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 20))
+        score_rect = score_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 30))
         self.screen.blit(score_surface, score_rect)
+
+        # New Game Button
+        button_width = 200
+        button_height = 50
+        button_x = (SCREEN_WIDTH - button_width) // 2
+        button_y = SCREEN_HEIGHT // 2 + 20
+
+        if not self.new_game_button:
+            self.new_game_button = Button(button_x, button_y, button_width, button_height,
+                                         "New Game", self.font)
+
+        mouse_pos = pygame.mouse.get_pos()
+        self.new_game_button.draw(self.screen, mouse_pos)
+
+    def reset_game_state(self):
+        """Reset game state for new game."""
+        self.game_over = False
+        self.winner_info = None
+        self.grid_state = bytearray([UNCLAIMED_ID] * (GRID_WIDTH * GRID_HEIGHT))
+        self.player_scores.clear()
+        self.target_players.clear()
+        self.visual_players.clear()
+        self.new_game_button = None
+        self.last_snapshot_id = -1
+        self.last_seq_num = -1
+        self.draw_game()
+        print("[CLIENT] Game state reset")
+
+    def request_new_game(self):
+        """Send new game request to server."""
+        payload = struct.pack('!B', self.client_id)
+        packet = pack_packet(MessageType.NEW_GAME, 0, 0, get_current_timestamp_ms(), payload)
+        self.socket.sendto(packet, self.server_address)
+        print(f"[CLIENT {self.client_id}] Sent new game request")
+        #self.reset_game_state()
+        self.waiting_for_new_game = True
+        self.new_game_button = None
+
+    def check_connection(self):
+        """Check if connection to server is still alive."""
+        if time.time() - self.last_packet_time > CONNECTION_TIMEOUT:
+            if self.connected:
+                print("[WARNING] Connection timeout - no packets received")
+                self.connected = False
 
     def run(self):
         """Main client loop (Phase 4)."""
@@ -341,30 +486,41 @@ class GridClient:
         self.socket.setblocking(False)
 
         running = True
-
         print(f"[CLIENT] Graphics started. Window open.")
 
         try:
             while running:
                 current_time = time.time()
-                dt = self.clock.get_time() / 1000.0 # delta time in seconds (from tick)
+                dt = self.clock.get_time() / 1000.0  # delta time in seconds (from tick)
 
-                # --- 1. Event Pump & Input (Phase 4 & 5) ---
+
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
                         running = False
-
                     elif event.type == pygame.MOUSEBUTTONDOWN:
-                        mouse_x, mouse_y = pygame.mouse.get_pos()
-                        grid_x = mouse_x // CELL_SIZE
-                        grid_y = mouse_y // CELL_SIZE
-                        print(f"[INPUT] Clicked Pixel ({mouse_x},{mouse_y}) -> Grid ({grid_x}, {grid_y})")
-                        self.send_acquire_request(grid_y, grid_x)
+                        # Check for New Game button click first
+                        if self.game_over and self.new_game_button:
+                            if self.new_game_button.is_clicked(event.pos):
+                                self.request_new_game()
+                                continue  # Skip grid click handling
+
+                        # Handle grid clicks (only if not game over)
+                        if not self.game_over:
+                            mouse_x, mouse_y = event.pos
+                            # Only process clicks in the grid area
+                            if mouse_y < 600:
+                                grid_x = mouse_x // CELL_SIZE
+                                grid_y = mouse_y // CELL_SIZE
+                                print(f"[INPUT] Clicked Pixel ({mouse_x},{mouse_y}) -> Grid ({grid_x}, {grid_y})")
+                                self.send_acquire_request(grid_y, grid_x)
 
                 # --- 2. Network Receive (Polling) (Phase 4) ---
                 if (current_time - self.last_heartbeat_time) >= self.heartbeat_interval:
                     self.send_heartbeat()
                     self.last_heartbeat_time = current_time
+
+                # Check connection status
+                self.check_connection()
 
                 # Drain the socket buffer
                 try:
@@ -397,14 +553,10 @@ class GridClient:
             if self.latencies:
                 avg_latency = sum(self.latencies) / len(self.latencies)
                 print(f"FINAL STATS: Received {self.packet_count} packets. Average latency: {avg_latency:.4f} ms")
-
             try:
-                if pygame.get_init():
-                    pygame.quit()
+                pygame.quit()
             except Exception:
-                # ignore pygame shutdown issues
                 pass
-
             self.socket.close()
 
 

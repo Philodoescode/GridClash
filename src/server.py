@@ -257,6 +257,8 @@ class GridServer:
                         self.handle_client_heartbeat(client_address)
                     elif pkt.msg_type == MessageType.ACQUIRE_REQUEST:
                         self.handle_acquire_request(client_address, payload)
+                    elif pkt.msg_type == MessageType.NEW_GAME:
+                        self.handle_new_game()
                 except BlockingIOError:
                     # Expected: no data to receive
                     pass
@@ -294,6 +296,51 @@ class GridServer:
                 break
 
         self.socket.close()
+    def reset_server(self):
+        print("[SERVER] Resetting server state...")
+        self.snapshot_id = 0
+        self.seq_num = 0
+        self.grid_state = bytearray([UNCLAIMED_ID] * (GRID_WIDTH * GRID_HEIGHT))
+        self.scores = {}
+        self.game_active = True
+        self.claimed_cells = 0
+        self.winner_id = None
+        self.winner_score = 0
+
+    def handle_new_game(self):
+        if self.game_active:
+            print("[SERVER] Game already active, ignoring NEW_GAME request")
+            return
+        print("[SERVER] Processing NEW_GAME request...")
+        # Store current client addresses before reset
+        connected_clients = list(self.clients.keys())
+        for client_addr in connected_clients:
+            player_id = self.clients[client_addr]['player_id']
+            self.clients[client_addr] = {
+                'player_id': player_id,
+                'seq_num': 0,
+                'last_heartbeat': time.time(),
+                'pos': (10 * (player_id + 1), 10 * (player_id + 1))
+            }
+            self.scores[player_id] = 0
+            #self.next_player_id += 1
+
+            # Send SERVER_INIT_RESPONSE with new ID
+            payload = struct.pack('!B', player_id)
+            response_packet = pack_packet(
+                MessageType.SERVER_INIT_RESPONSE,
+                0, 0,
+                get_current_timestamp_ms(),
+                payload
+            )
+            self.socket.sendto(response_packet, client_addr)
+            print(f"[SERVER] Re-assigned Player {player_id} to {client_addr}")
+
+            # Broadcast initial clean state immediately
+        self.state_broadcast()
+        print("[SERVER] New game started and broadcasted to all clients")
+
+        self.reset_server()
 
 
 def main():
