@@ -11,6 +11,7 @@ from src.protocol import unpack_packet, get_current_timestamp_ms, pack_packet, M
 from src.server import MAX_PACKET_SIZE
 from src.constants import  SCREEN_WIDTH, PLAYER_STRIP_HEIGHT, SCREEN_HEIGHT, CELL_SIZE, WHITE, BLACK, GRAY, LIGHT_GRAY, DARK_GRAY, GRID_COLOR, BUTTON_COLOR, BUTTON_HOVER_COLOR, STRIP_BG_COLOR, PLAYER_COLORS, CONNECTION_TIMEOUT
 from src.UI_elements import Button
+import threading
 
 
 
@@ -66,6 +67,12 @@ class GridClient:
         self.font = None
         self.big_font = None
         self.new_game_button = None
+
+        # Reliability variables
+        self.seq_num = 0
+        self.pending_requests = {}  # Stores requests waiting for ACKs
+        self.rtt = 100.0            # Estimated Round Trip Time (ms)
+        self.rtt_dev = 0.0          # RTT Deviation
 
     def is_legal_move(self, row, col):
         """Check if move is legal."""
@@ -167,21 +174,24 @@ class GridClient:
             num_players = payload[GRID_SIZE_BYTES]
             offset = GRID_SIZE_BYTES + 1
 
-            BYTES_PER_PLAYER = 11  # ID(1) + Score(2) + X(4) + Y(4)
-
+            BYTES_PER_PLAYER = 19 # ← UPDATED: B H i i i i (ID, score, x, y, dx, dy)
             # Track which players are in this update
             current_players = set()
 
             for _ in range(num_players):
                 if offset + BYTES_PER_PLAYER <= len(payload):
-                    p_id, score, pos_x, pos_y = struct.unpack('!BHii', payload[offset:offset + BYTES_PER_PLAYER])
+                    p_id, score, pos_x, pos_y, dx, dy = struct.unpack('!BHiiii', payload[offset:offset + BYTES_PER_PLAYER])
 
-                    # Update authoritative state (target) and scores
+                    # ← DELTA RECOVERY
+                    if self.last_seq_num != -1 and packet.seq_num == self.last_seq_num + 2:
+                        recovered_x = pos_x - dx
+                        recovered_y = pos_y - dy
+                        print(f"[REDUNDANCY] Recovered P{p_id} pos: ({recovered_x}, {recovered_y})")
+
                     self.target_players[p_id] = (pos_x, pos_y)
                     self.player_scores[p_id] = score
                     current_players.add(p_id)
 
-                    # If this is the first time seeing this player, snap visual to target immediately
                     if p_id not in self.visual_players:
                         self.visual_players[p_id] = (float(pos_x), float(pos_y))
 
@@ -218,22 +228,69 @@ class GridClient:
             print(f"Error handling game over: {e}")
 
     def send_acquire_request(self, row, col):
-        """Send ACQUIRE_REQUEST to claim a cell."""
+        """Send ACQUIRE_REQUEST with timestamp and start retransmission timer."""
 
-        if self.game_over:
+        if self.game_over or not self.is_legal_move(row, col):
             return
-        if not self.is_legal_move(row, col):
-            print(f"[CLIENT] Illegal move: ({row}, {col}), pos: ({self.pos_x}, {self.pos_y})")
-            return
-        # Bounds check
-        if not (0 <= row < GRID_HEIGHT and 0 <= col < GRID_WIDTH):
-            return
+
+        # **Update predicted position immediately**
         self.pos_x = col
         self.pos_y = row
-        payload = struct.pack('!BB', row, col)
-        packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, 0, get_current_timestamp_ms(), payload)
+        client_ts = get_current_timestamp_ms()
+        payload = struct.pack('!BBQ', row, col, client_ts)  # ← CRITICAL: Send client timestamp
+        self.seq_num += 1
+        packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, self.seq_num, client_ts, payload)
         self.socket.sendto(packet, self.server_address)
-        print(f"[CLIENT] Sent ACQUIRE_REQUEST for cell ({row}, {col})")
+
+        # ← RELIABILITY: Start RTO timer
+        rto = self.rtt + 4 * self.rtt_dev
+        if rto < 100: rto = 100  # Minimum 100ms
+        timer = threading.Timer(rto / 1000.0, self._retransmit_request, [self.seq_num])
+        timer.start()
+
+        self.pending_requests[self.seq_num] = {
+            'row': row, 'col': col, 'ts': client_ts,
+            'timer': timer, 'retries': 0, 'send_time': get_current_timestamp_ms()
+        }
+        print(f"[CLIENT {self.client_id}] → ACQUIRE_REQUEST ({row},{col}) seq={self.seq_num} ts={client_ts}")
+
+    
+    def _retransmit_request(self, seq):
+        """Retransmit ACQUIRE_REQUEST on timeout."""   
+        if seq not in self.pending_requests:
+            return
+        req = self.pending_requests[seq]
+        if req['retries'] >= 3:
+            print(f"[CLIENT {self.client_id}] Acquire failed after 3 retries (seq={seq})")
+            del self.pending_requests[seq]
+            return
+
+        payload = struct.pack('!BBQ', req['row'], req['col'], req['ts'])
+        packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, seq, req['ts'], payload)
+        self.socket.sendto(packet, self.server_address)
+
+        req['retries'] += 1
+        rto = (self.rtt + 4 * self.rtt_dev) * (2 ** req['retries'])
+        if rto > 2000: rto = 2000  # Max 2s
+        req['timer'] = threading.Timer(rto / 1000.0, self._retransmit_request, [seq])
+        req['timer'].start()
+        print(f"[CLIENT {self.client_id}] Retransmit seq={seq} retry={req['retries']}")
+
+    def handle_ack_nack(self, pkt, payload):
+        """Handle ACK/NACK from server."""
+        if len(payload) < 5:
+            return
+        seq_num, success = struct.unpack('!I?', payload[:5])
+        if seq_num in self.pending_requests:
+            if success:
+                # ACKed → remove from pending
+                print(f"[ACK] Seq {seq_num} confirmed by server")
+                del self.pending_requests[seq_num]
+        else:
+            # NACKed → requeue immediately
+            print(f"[NACK] Seq {seq_num} requeued for retransmission")
+            self.pending_requests[seq_num]['retries'] = 0  # reset retries
+            self.pending_requests[seq_num]['timestamp'] = 0  # immediate retry
 
     def update_visuals(self, dt):
         """
@@ -529,7 +586,7 @@ class GridClient:
                     while True:
                         data, addr = self.socket.recvfrom(MAX_PACKET_SIZE)
                         if addr == self.server_address:
-                            pkt, _ = unpack_packet(data)
+                            pkt, payload = unpack_packet(data)
                             if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE:
                                 self.handle_server_hello(data)
                             elif pkt.msg_type == MessageType.SNAPSHOT:
@@ -538,6 +595,8 @@ class GridClient:
                                 self.handle_game_over(data)
                             elif pkt.msg_type == MessageType.SERVER_FULL:
                                 self.handle_server_full(data)
+                            elif pkt.msg_type == MessageType.ACK or pkt.msg_type == MessageType.NACK:
+                                self.handle_ack_nack(pkt, payload)  # ← RELIABILITY    
                 except BlockingIOError:
                     # No more data available right now
                     pass

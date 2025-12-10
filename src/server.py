@@ -62,6 +62,7 @@ class GridServer:
         self.clients_pos = {}
         # Grid state: 400 bytes (20x20), each cell stores owner ID (255 = unclaimed)
         self.grid_state = bytearray([UNCLAIMED_ID] * (GRID_WIDTH * GRID_HEIGHT))
+        self.grid_ts = [[0 for _ in range(GRID_HEIGHT)] for _ in range(GRID_WIDTH)]  # ← CRITICAL: Timestamp per cell
         self.scores = {}  # {player_id: score}
         self.game_active = True
         self.claimed_cells = 0
@@ -112,7 +113,8 @@ class GridServer:
                 'player_id': player_id,
                 'seq_num': 0,
                 'last_heartbeat': time.time(),
-                'pos': pos # starting position
+                'pos': pos, # starting position
+                'processed_seqs': set()
             }
             self.active_clients_ids.append(player_id)
             if player_id not in self.scores:
@@ -157,57 +159,65 @@ class GridServer:
 
         # remove timed out clients
         for clientAddress in timed_out_clients:
-            print(f"{clientAddress} timed out")
-            self.active_clients_ids.remove(self.clients[clientAddress]['player_id'])
+            player_id = self.clients[clientAddress]['player_id']
+            print(f"{clientAddress} timed out (Player {player_id})")
+            if player_id in self.active_clients_ids:
+                self.active_clients_ids.remove(player_id)
             del self.clients[clientAddress]
 
-    def handle_acquire_request(self, client_address, payload):
-        """Handle cell acquisition request from client."""
-        if not self.game_active:
-            return
+    def handle_acquire_request(self, client_address, payload, packet_seq_num):
+        """Handle ACQUIRE_REQUEST with reliability (ACKs) and Duplicate Suppression."""
         
-        if client_address not in self.clients:
+        if not self.game_active or client_address not in self.clients:
             return
-        
+    
+        client = self.clients[client_address]
+    
+    # Duplicate suppression
+        if packet_seq_num in client['processed_seqs']:
+        # Re-send previous ACK/NACK if needed
+            prev_ack_payload = struct.pack('!I?', packet_seq_num, True)  # True=ACK
+            ack_packet = pack_packet(MessageType.ACK, self.snapshot_id, 0, get_current_timestamp_ms(), prev_ack_payload)
+            self.socket.sendto(ack_packet, client_address)
+            return
+
+    # Payload unpack
         if len(payload) < 2:
             return
-        
         row, col = struct.unpack('!BB', payload[:2])
-        
-        # Validate bounds
         if row >= GRID_HEIGHT or col >= GRID_WIDTH:
             return
-        
+
         index = row * GRID_WIDTH + col
-        player_id = self.clients[client_address]['player_id']
-        if self.grid_state[index] == self.clients[client_address]['player_id']:
-            self.clients[client_address]['pos'] = (col, row)
-            self.clients_pos[player_id] = (col, row)
-            return
+        player_id = client['player_id']
+        success = False
 
-        # Check if cell is unclaimed (FCFS - first packet wins)
-        if self.grid_state[index] != UNCLAIMED_ID:
-            return
-        
+    # Check cell ownership
+        if self.grid_state[index] == UNCLAIMED_ID:
+            self.grid_state[index] = player_id
+            self.scores[player_id] = self.scores.get(player_id, 0) + 1
+            self.claimed_cells += 1
+            success = True
+            print(f"[ACQUIRE] Player {player_id} claimed ({row},{col})")
+        elif self.grid_state[index] == player_id:
+            success = True  # Already owned
+    # else success=False (cell claimed by another player)
 
-        
-        # Claim the cell
-        self.grid_state[index] = player_id
-        self.scores[player_id] = self.scores.get(player_id, 0) + 1
-        self.claimed_cells += 1
-
-        #update client position
-        self.clients[client_address]['pos'] = (col, row)
+    # Update position regardless
+        client['pos'] = (col, row)
         self.clients_pos[player_id] = (col, row)
-        print(f"[ACQUIRE] Player {player_id} claimed cell ({row}, {col}). Score: {self.scores[player_id]}")
-        
-        # Check for game over
-        if self.claimed_cells >= GRID_WIDTH * GRID_HEIGHT:
+
+    # Mark processed
+        client['processed_seqs'].add(packet_seq_num)
+
+    # Send selective ACK/NACK
+        ack_payload = struct.pack('!I?', packet_seq_num, success)  # bool: True=ACK, False=NACK
+        ack_packet = pack_packet(MessageType.ACK, self.snapshot_id, 0, get_current_timestamp_ms(), ack_payload)
+        self.socket.sendto(ack_packet, client_address)
+
+    # Check game over
+        if self.claimed_cells >= GRID_WIDTH * GRID_HEIGHT or self.scores[player_id] >= GRID_WIDTH * GRID_HEIGHT / 2:
             self.broadcast_game_over()
-        for clientAddress, clientData in self.clients.items():
-            id = clientData['player_id']
-            if self.scores[id] >= GRID_WIDTH * GRID_HEIGHT / 2:
-                self.broadcast_game_over()
 
     def acquire_cell(self, col, row, player_id):
         index = row * GRID_WIDTH + col
@@ -264,8 +274,14 @@ class GridServer:
             score = self.scores.get(player_id, 0)
             curr_pos = clientData['pos']
             
-            # Pack: ID (1 byte), Score (2 bytes), X (4 bytes), Y (4 bytes) = 11 bytes
-            payload += struct.pack('!BHii', player_id, score, curr_pos[0], curr_pos[1])
+            # ← DELTA ENCODING
+            prev_pos = clientData.get('prev_pos', curr_pos)
+            dx = curr_pos[0] - prev_pos[0]
+            dy = curr_pos[1] - prev_pos[1]
+            clientData['prev_pos'] = curr_pos  # Save for next
+
+            # Pack: ID, Score, X, Y, dX, dY → 17 bytes
+            payload += struct.pack('!BHiiii', player_id, score, curr_pos[0], curr_pos[1], dx, dy)
 
         # send packets to all connected clients
         for clientAddress, clientData in self.clients.items():
@@ -316,7 +332,7 @@ class GridServer:
                     elif pkt.msg_type == MessageType.HEARTBEAT:
                         self.handle_client_heartbeat(client_address)
                     elif pkt.msg_type == MessageType.ACQUIRE_REQUEST:
-                        self.handle_acquire_request(client_address, payload)
+                        self.handle_acquire_request(client_address, payload, pkt.seq_num)
                     elif pkt.msg_type == MessageType.NEW_GAME:
                         self.handle_new_game()
                 except BlockingIOError:
@@ -361,6 +377,7 @@ class GridServer:
         self.snapshot_id = 0
         self.seq_num = 0
         self.grid_state = bytearray([UNCLAIMED_ID] * (GRID_WIDTH * GRID_HEIGHT))
+        self.grid_ts = [[0 for _ in range(GRID_HEIGHT)] for _ in range(GRID_WIDTH)]  # ← RESET TIMESTAMPS
         self.scores = {}
         self.game_active = True
         self.claimed_cells = 0
@@ -384,7 +401,8 @@ class GridServer:
                 'player_id': player_id,
                 'seq_num': 0,
                 'last_heartbeat': time.time(),
-                'pos': PLAYER_POSITIONS.get(player_id, PLAYER_POSITIONS['default'])
+                'pos': PLAYER_POSITIONS.get(player_id, PLAYER_POSITIONS['default']),
+                'processed_seqs': set()
             }
             self.scores[player_id] = 0
             #self.next_player_id += 1
