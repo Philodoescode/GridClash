@@ -280,17 +280,44 @@ class GridClient:
         """Handle ACK/NACK from server."""
         if len(payload) < 5:
             return
-        seq_num, success = struct.unpack('!I?', payload[:5])
-        if seq_num in self.pending_requests:
-            if success:
-                # ACKed → remove from pending
-                print(f"[ACK] Seq {seq_num} confirmed by server")
+
+        try:
+            seq_num, success = struct.unpack('!I?', payload[:5])
+        except struct.error:
+            return
+
+        req = self.pending_requests.get(seq_num)
+        if req is None:
+            # Already processed or unknown sequence — ignore.
+            print(f"[ACK/NACK] Received for unknown seq={seq_num}, ignoring")
+            return
+
+        # Stop the timer for this request (safe if already fired)
+        try:
+            req['timer'].cancel()
+        except Exception:
+            pass
+
+        if success:
+            # Update RTT estimators
+            sample_rtt = get_current_timestamp_ms() - req.get('send_time', get_current_timestamp_ms())
+            self.rtt = 0.875 * self.rtt + 0.125 * sample_rtt
+            self.rtt_dev = 0.75 * self.rtt_dev + 0.25 * abs(sample_rtt - self.rtt)
+
+            # Commit the move (position) and remove pending request
+            self.pos_x, self.pos_y = req['col'], req['row']
+            print(f"[ACK] Seq {seq_num} confirmed by server -> claimed ({req['row']},{req['col']})")
+            try:
                 del self.pending_requests[seq_num]
+            except KeyError:
+                pass
         else:
-            # NACKed → requeue immediately
-            print(f"[NACK] Seq {seq_num} requeued for retransmission")
-            self.pending_requests[seq_num]['retries'] = 0  # reset retries
-            self.pending_requests[seq_num]['timestamp'] = 0  # immediate retry
+            # NACK: server rejected this request — retry immediately (reset retries)
+            print(f"[NACK] Seq {seq_num} rejected by server, retransmitting immediately")
+            req['retries'] = 0
+            # schedule immediate retransmit on a short delay to avoid blocking caller
+            req['timer'] = threading.Timer(0.01, self._retransmit_request, [seq_num])
+            req['timer'].start()
 
     def update_visuals(self, dt):
         """
