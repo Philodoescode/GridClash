@@ -135,7 +135,7 @@ class GridClient:
 
                 # Update window title if graphics are initialized
                 if self.screen:
-                    pygame.display.set_caption(f"GridClash - Player {self.client_id}")
+                    pygame.display.set_caption(f"GridClash - Player {self.client_id + 1}")
         except ValueError as e:
             print(f"[ERROR] Invalid SERVER_HELLO: {e}")
 
@@ -431,16 +431,34 @@ class GridClient:
         # Dividing lines
         pygame.draw.line(self.screen, DARK_GRAY, (0, strip_y), (SCREEN_WIDTH, strip_y), 2)
 
-        # Get sorted player list (max 4)
+
         players = sorted(self.player_scores.keys())[:MAX_CLIENTS]
         if not players:
             return
 
-        slot_width = SCREEN_WIDTH / MAX_CLIENTS
+        # Base slot width
+        base_slot = SCREEN_WIDTH / MAX_CLIENTS
+
+        # Extra width for the "You" slot (tweak as needed)
+        YOU_BONUS = 42
+
+        # Build a width list for each player slot
+        slot_widths = []
+        for p in players:
+            if p == self.client_id:
+                slot_widths.append(base_slot + YOU_BONUS)
+            else:
+                slot_widths.append(base_slot)
+
+        # Precompute starting X positions
+        slot_starts = [0]
+        for w in slot_widths[:-1]:
+            slot_starts.append(slot_starts[-1] + w)
 
         for idx, p_id in enumerate(players):
-            x_start = idx * slot_width
-            x_center = x_start + slot_width // 2
+            slot_width = slot_widths[idx]
+            x_start = slot_starts[idx]
+            x_center = x_start + slot_width / 2
 
             # Player color indicator
             color = PLAYER_COLORS.get(p_id, PLAYER_COLORS['default'])
@@ -455,18 +473,27 @@ class GridClient:
 
             # Player label
             if p_id == self.client_id:
-                label = f"Player {p_id} (You)"
+                label = f"Player {p_id + 1} (You)"
             else:
-                label = f"Player {p_id}"
+                label = f"Player {p_id + 1}"
 
             label_surface = self.font.render(label, True, BLACK)
             self.screen.blit(label_surface, (x_start + 60, strip_y + 15))
 
-            # Score
+            # Score title
             score = self.player_scores.get(p_id, 0)
-            score_text = f"Score: {score}"
-            score_surface = self.font.render(score_text, True, DARK_GRAY)
-            self.screen.blit(score_surface, (x_start + 60, strip_y + 45))
+
+            score_label_surface = self.font.render("SCORE", True, DARK_GRAY)
+            score_value_surface = self.font.render(str(score), True, BLACK)
+            center_x = x_start + slot_width / 2
+
+            # Center "SCORE"
+            label_rect = score_label_surface.get_rect(center=(center_x +25, strip_y + 50))
+            self.screen.blit(score_label_surface, label_rect)
+
+            # Draw the numeric score right under it
+            value_rect = score_value_surface.get_rect(center=(center_x + 25, strip_y + 75))
+            self.screen.blit(score_value_surface, value_rect)
 
             # Vertical divider (except for last player)
             if idx < len(players) - 1:
