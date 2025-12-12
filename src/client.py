@@ -7,6 +7,7 @@ import sys
 import time
 import pygame
 from collections import deque
+import threading
 
 
 
@@ -21,7 +22,12 @@ from src.protocol import unpack_packet, get_current_timestamp_ms, pack_packet, M
 from src.server import MAX_PACKET_SIZE
 from src.constants import  SCREEN_WIDTH, PLAYER_STRIP_HEIGHT, SCREEN_HEIGHT, CELL_SIZE, WHITE, BLACK, GRAY, LIGHT_GRAY, DARK_GRAY, GRID_COLOR, BUTTON_COLOR, BUTTON_HOVER_COLOR, STRIP_BG_COLOR, PLAYER_COLORS, CONNECTION_TIMEOUT
 from src.UI_elements import Button
-
+from src.protocol import unpack_packet, get_current_timestamp_ms, pack_packet, MessageType, UNCLAIMED_ID
+from src.server import MAX_PACKET_SIZE
+from src.constants import SCREEN_WIDTH, PLAYER_STRIP_HEIGHT, SCREEN_HEIGHT, CELL_SIZE, WHITE, BLACK, GRAY, LIGHT_GRAY, \
+    DARK_GRAY, GRID_COLOR, BUTTON_COLOR, BUTTON_HOVER_COLOR, STRIP_BG_COLOR, PLAYER_COLORS, CONNECTION_TIMEOUT, \
+    MAX_CLIENTS, GRID_WIDTH, GRID_HEIGHT
+from src.UI_elements import Button
 
 
 
@@ -67,12 +73,19 @@ class GridClient:
         self.big_font = None
         self.new_game_button = None
 
+        # Reliability variables
+        self.seq_num = 0
+        self.pending_requests = {}  # Stores requests waiting for ACKs
+        self.rtt = 100.0            # Estimated Round Trip Time (ms)
+        self.rtt_dev = 0.0          # RTT Deviation
+
     def is_legal_move(self, row, col):
         """Check if move is legal."""
         # Check if cell is unclaimed
         index = row * GRID_WIDTH + col
         # Bounds check
         if not (0 <= row < GRID_HEIGHT and 0 <= col < GRID_WIDTH):
+            print(f"[CLIENT] Move to ({row}, {col}) is out of bounds")
             return False
 
         if self.grid_state[index] != UNCLAIMED_ID and self.grid_state[index] != self.client_id:
@@ -90,7 +103,7 @@ class GridClient:
 
 
         return True
-        pass
+
 
     def send_hello(self):
         """Send hello message to server."""
@@ -125,7 +138,7 @@ class GridClient:
 
                 # Update window title if graphics are initialized
                 if self.screen:
-                    pygame.display.set_caption(f"GridClash - Player {self.client_id}")
+                    pygame.display.set_caption(f"GridClash - Player {self.client_id + 1}")
         except ValueError as e:
             print(f"[ERROR] Invalid SERVER_HELLO: {e}")
 
@@ -159,7 +172,7 @@ class GridClient:
             self.connected = True
 
             # Parse payload
-            GRID_SIZE_BYTES = GRID_WIDTH * GRID_HEIGHT  # 400
+            GRID_SIZE_BYTES = GRID_WIDTH * GRID_HEIGHT
             if len(payload) < GRID_SIZE_BYTES + 1:
                 return  # Malformed payload
 
@@ -167,21 +180,24 @@ class GridClient:
             num_players = payload[GRID_SIZE_BYTES]
             offset = GRID_SIZE_BYTES + 1
 
-            BYTES_PER_PLAYER = 11  # ID(1) + Score(2) + X(4) + Y(4)
-
+            BYTES_PER_PLAYER = 19 # ← UPDATED: B H i i i i (ID, score, x, y, dx, dy)
             # Track which players are in this update
             current_players = set()
 
             for _ in range(num_players):
                 if offset + BYTES_PER_PLAYER <= len(payload):
-                    p_id, score, pos_x, pos_y = struct.unpack('!BHii', payload[offset:offset + BYTES_PER_PLAYER])
+                    p_id, score, pos_x, pos_y, dx, dy = struct.unpack('!BHiiii', payload[offset:offset + BYTES_PER_PLAYER])
 
-                    # Update authoritative state (target) and scores
+                    # ← DELTA RECOVERY
+                    if self.last_seq_num != -1 and packet.seq_num == self.last_seq_num + 2:
+                        recovered_x = pos_x - dx
+                        recovered_y = pos_y - dy
+                        print(f"[REDUNDANCY] Recovered P{p_id} pos: ({recovered_x}, {recovered_y})")
+
                     self.target_players[p_id] = (pos_x, pos_y)
                     self.player_scores[p_id] = score
                     current_players.add(p_id)
 
-                    # If this is the first time seeing this player, snap visual to target immediately
                     if p_id not in self.visual_players:
                         self.visual_players[p_id] = (float(pos_x), float(pos_y))
 
@@ -218,22 +234,96 @@ class GridClient:
             print(f"Error handling game over: {e}")
 
     def send_acquire_request(self, row, col):
-        """Send ACQUIRE_REQUEST to claim a cell."""
+        """Send ACQUIRE_REQUEST with timestamp and start retransmission timer."""
 
-        if self.game_over:
+        if self.game_over or not self.is_legal_move(row, col):
             return
-        if not self.is_legal_move(row, col):
-            print(f"[CLIENT] Illegal move: ({row}, {col}), pos: ({self.pos_x}, {self.pos_y})")
-            return
-        # Bounds check
-        if not (0 <= row < GRID_HEIGHT and 0 <= col < GRID_WIDTH):
-            return
+
+        # **Update predicted position immediately**
         self.pos_x = col
         self.pos_y = row
-        payload = struct.pack('!BB', row, col)
-        packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, 0, get_current_timestamp_ms(), payload)
+        client_ts = get_current_timestamp_ms()
+        payload = struct.pack('!BBQ', row, col, client_ts)  # ← CRITICAL: Send client timestamp
+        self.seq_num += 1
+        packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, self.seq_num, client_ts, payload)
         self.socket.sendto(packet, self.server_address)
-        print(f"[CLIENT] Sent ACQUIRE_REQUEST for cell ({row}, {col})")
+
+        # ← RELIABILITY: Start RTO timer
+        rto = self.rtt + 4 * self.rtt_dev
+        if rto < 100: rto = 100  # Minimum 100ms
+        timer = threading.Timer(rto / 1000.0, self._retransmit_request, [self.seq_num])
+        timer.start()
+
+        self.pending_requests[self.seq_num] = {
+            'row': row, 'col': col, 'ts': client_ts,
+            'timer': timer, 'retries': 0, 'send_time': get_current_timestamp_ms()
+        }
+        print(f"[CLIENT {self.client_id}] → ACQUIRE_REQUEST ({row},{col}) seq={self.seq_num} ts={client_ts}")
+
+    
+    def _retransmit_request(self, seq):
+        """Retransmit ACQUIRE_REQUEST on timeout."""   
+        if seq not in self.pending_requests:
+            return
+        req = self.pending_requests[seq]
+        if req['retries'] >= 3:
+            print(f"[CLIENT {self.client_id}] Acquire failed after 3 retries (seq={seq})")
+            del self.pending_requests[seq]
+            return
+
+        payload = struct.pack('!BBQ', req['row'], req['col'], req['ts'])
+        packet = pack_packet(MessageType.ACQUIRE_REQUEST, 0, seq, req['ts'], payload)
+        self.socket.sendto(packet, self.server_address)
+
+        req['retries'] += 1
+        rto = (self.rtt + 4 * self.rtt_dev) * (2 ** req['retries'])
+        if rto > 2000: rto = 2000  # Max 2s
+        req['timer'] = threading.Timer(rto / 1000.0, self._retransmit_request, [seq])
+        req['timer'].start()
+        print(f"[CLIENT {self.client_id}] Retransmit seq={seq} retry={req['retries']}")
+
+    def handle_ack_nack(self, pkt, payload):
+        """Handle ACK/NACK from server."""
+        if len(payload) < 5:
+            return
+
+        try:
+            seq_num, success = struct.unpack('!I?', payload[:5])
+        except struct.error:
+            return
+
+        req = self.pending_requests.get(seq_num)
+        if req is None:
+            # Already processed or unknown sequence — ignore.
+            print(f"[ACK/NACK] Received for unknown seq={seq_num}, ignoring")
+            return
+
+        # Stop the timer for this request (safe if already fired)
+        try:
+            req['timer'].cancel()
+        except Exception:
+            pass
+
+        if success:
+            # Update RTT estimators
+            sample_rtt = get_current_timestamp_ms() - req.get('send_time', get_current_timestamp_ms())
+            self.rtt = 0.875 * self.rtt + 0.125 * sample_rtt
+            self.rtt_dev = 0.75 * self.rtt_dev + 0.25 * abs(sample_rtt - self.rtt)
+
+            # Commit the move (position) and remove pending request
+            self.pos_x, self.pos_y = req['col'], req['row']
+            print(f"[ACK] Seq {seq_num} confirmed by server -> claimed ({req['row']},{req['col']})")
+            try:
+                del self.pending_requests[seq_num]
+            except KeyError:
+                pass
+        else:
+            # NACK: server rejected this request — retry immediately (reset retries)
+            print(f"[NACK] Seq {seq_num} rejected by server, retransmitting immediately")
+            req['retries'] = 0
+            # schedule immediate retransmit on a short delay to avoid blocking caller
+            req['timer'] = threading.Timer(0.01, self._retransmit_request, [seq_num])
+            req['timer'].start()
 
     def update_visuals(self, dt):
         """
@@ -300,8 +390,8 @@ class GridClient:
 
         # 3. Grid Lines
         for x in range(0, SCREEN_WIDTH, CELL_SIZE):
-            pygame.draw.line(self.screen, GRID_COLOR, (x, 0), (x, 600))
-        for y in range(0, 600, CELL_SIZE):
+            pygame.draw.line(self.screen, GRID_COLOR, (x, 0), (x, SCREEN_WIDTH))
+        for y in range(0, SCREEN_WIDTH, CELL_SIZE):
             pygame.draw.line(self.screen, GRID_COLOR, (0, y), (SCREEN_WIDTH, y))
 
         # # 4. Players (cursors)
@@ -336,7 +426,7 @@ class GridClient:
 
     def draw_player_strip(self):
         """Draw horizontal player strip below the grid."""
-        strip_y = 600
+        strip_y = SCREEN_WIDTH
 
         # Background
         pygame.draw.rect(self.screen, STRIP_BG_COLOR, (0, strip_y, SCREEN_WIDTH, PLAYER_STRIP_HEIGHT))
@@ -344,16 +434,34 @@ class GridClient:
         # Dividing lines
         pygame.draw.line(self.screen, DARK_GRAY, (0, strip_y), (SCREEN_WIDTH, strip_y), 2)
 
-        # Get sorted player list (max 4)
-        players = sorted(self.player_scores.keys())[:4]
+
+        players = sorted(self.player_scores.keys())[:MAX_CLIENTS]
         if not players:
             return
 
-        slot_width = SCREEN_WIDTH // 4
+        # Base slot width
+        base_slot = SCREEN_WIDTH / MAX_CLIENTS
+
+        # Extra width for the "You" slot (tweak as needed)
+        YOU_BONUS = 42
+
+        # Build a width list for each player slot
+        slot_widths = []
+        for p in players:
+            if p == self.client_id:
+                slot_widths.append(base_slot + YOU_BONUS)
+            else:
+                slot_widths.append(base_slot)
+
+        # Precompute starting X positions
+        slot_starts = [0]
+        for w in slot_widths[:-1]:
+            slot_starts.append(slot_starts[-1] + w)
 
         for idx, p_id in enumerate(players):
-            x_start = idx * slot_width
-            x_center = x_start + slot_width // 2
+            slot_width = slot_widths[idx]
+            x_start = slot_starts[idx]
+            x_center = x_start + slot_width / 2
 
             # Player color indicator
             color = PLAYER_COLORS.get(p_id, PLAYER_COLORS['default'])
@@ -368,18 +476,27 @@ class GridClient:
 
             # Player label
             if p_id == self.client_id:
-                label = f"Player {p_id} (You)"
+                label = f"Player {p_id + 1} (You)"
             else:
-                label = f"Player {p_id}"
+                label = f"Player {p_id + 1}"
 
             label_surface = self.font.render(label, True, BLACK)
             self.screen.blit(label_surface, (x_start + 60, strip_y + 15))
 
-            # Score
+            # Score title
             score = self.player_scores.get(p_id, 0)
-            score_text = f"Score: {score}"
-            score_surface = self.font.render(score_text, True, DARK_GRAY)
-            self.screen.blit(score_surface, (x_start + 60, strip_y + 45))
+
+            score_label_surface = self.font.render("SCORE", True, DARK_GRAY)
+            score_value_surface = self.font.render(str(score), True, BLACK)
+            center_x = x_start + slot_width / 2
+
+            # Center "SCORE"
+            label_rect = score_label_surface.get_rect(center=(center_x +25, strip_y + 50))
+            self.screen.blit(score_label_surface, label_rect)
+
+            # Draw the numeric score right under it
+            value_rect = score_value_surface.get_rect(center=(center_x + 25, strip_y + 75))
+            self.screen.blit(score_value_surface, value_rect)
 
             # Vertical divider (except for last player)
             if idx < len(players) - 1:
@@ -529,7 +646,7 @@ class GridClient:
                     while True:
                         data, addr = self.socket.recvfrom(MAX_PACKET_SIZE)
                         if addr == self.server_address:
-                            pkt, _ = unpack_packet(data)
+                            pkt, payload = unpack_packet(data)
                             if pkt.msg_type == MessageType.SERVER_INIT_RESPONSE:
                                 self.handle_server_hello(data)
                             elif pkt.msg_type == MessageType.SNAPSHOT:
@@ -538,6 +655,8 @@ class GridClient:
                                 self.handle_game_over(data)
                             elif pkt.msg_type == MessageType.SERVER_FULL:
                                 self.handle_server_full(data)
+                            elif pkt.msg_type == MessageType.ACK or pkt.msg_type == MessageType.NACK:
+                                self.handle_ack_nack(pkt, payload)  # ← RELIABILITY    
                 except BlockingIOError:
                     # No more data available right now
                     pass
@@ -586,7 +705,7 @@ class GridClient:
         self.screen.blit(text_surface, text_rect)
 
         # Subtitle
-        subtitle = "Maximum 4 players reached"
+        subtitle = f"Maximum {MAX_CLIENTS} players reached"
         subtitle_surface = self.font.render(subtitle, True, (200, 200, 200))
         subtitle_rect = subtitle_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 20))
         self.screen.blit(subtitle_surface, subtitle_rect)

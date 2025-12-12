@@ -24,8 +24,7 @@ HEADER_FORMAT = "!4sBBIIQHI"  # using checksum CRC32
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)  # 28 bytes
 
 # Grid constants
-GRID_WIDTH = 20
-GRID_HEIGHT = 20
+
 UNCLAIMED_ID = 255  # Special value indicating a cell has no owner
 
 
@@ -41,6 +40,8 @@ class MessageType(IntEnum):
     GAME_OVER = 5  # Server → Client (winner_id, winner_score)
     NEW_GAME = 6  # client -> server (new game request)
     SERVER_FULL = 7  # server -> client (server full)
+    ACK = 8          # ←  RELIABILITY CODE
+    NACK = 9        # ←  RELIABILITY CODE
 
 # used a namedtuple instead of class for simplicity
 packet = namedtuple(
