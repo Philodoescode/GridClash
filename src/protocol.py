@@ -24,8 +24,7 @@ HEADER_FORMAT = "!4sBBIIQHI"  # using checksum CRC32
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)  # 28 bytes
 
 # Grid constants
-GRID_WIDTH = 20
-GRID_HEIGHT = 20
+
 UNCLAIMED_ID = 255  # Special value indicating a cell has no owner
 
 

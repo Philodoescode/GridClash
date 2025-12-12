@@ -1,6 +1,5 @@
 """Server for GridClash game."""
 import os
-import random
 import socket
 import struct
 import sys
@@ -11,21 +10,10 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from src.protocol import pack_packet, MessageType, get_current_timestamp_ms, unpack_packet, GRID_WIDTH, GRID_HEIGHT, UNCLAIMED_ID
+from src.protocol import pack_packet, MessageType, get_current_timestamp_ms, unpack_packet, UNCLAIMED_ID
+from src.constants import DEFAULT_PORT, GRID_SIZE, MAX_PACKET_SIZE, PLAYER_POSITIONS, MAX_CLIENTS, GRID_WIDTH, \
+    GRID_HEIGHT, WINNING_THRESHOLD
 
-# Network configurations
-DEFAULT_PORT = 12000
-GRID_SIZE = 20
-MAX_PACKET_SIZE = 1200
-
-
-PLAYER_POSITIONS = {
-    0: (random.randint(2, 8), random.randint(2, 8)),      # Top Left
-    1: (random.randint(12, 18), random.randint(2, 8)),      # Top Right
-    2: (random.randint(2, 8), random.randint(12, 18)),      # Bottom Left
-    3: (random.randint(12, 18), random.randint(12, 18)),    # Bottom Right
-    'default': (10, 10)  # middle for unknown IDs
-}
 
 class GridServer:
     """
@@ -43,7 +31,7 @@ class GridServer:
         """Initialize server"""
         self.port = port
         self.grid_size = grid_size
-        self.max_clients = 4
+        self.max_clients = MAX_CLIENTS
         self.heartbeat_timeout = 10  # seconds
         self.broadcast_frequency = 20  # hz
         self.max_packet_size = MAX_PACKET_SIZE
@@ -216,7 +204,7 @@ class GridServer:
         self.socket.sendto(ack_packet, client_address)
 
     # Check game over
-        if self.claimed_cells >= GRID_WIDTH * GRID_HEIGHT or self.scores[player_id] >= GRID_WIDTH * GRID_HEIGHT / 2:
+        if self.claimed_cells >= GRID_WIDTH * GRID_HEIGHT or self.scores[player_id] >= WINNING_THRESHOLD:
             self.broadcast_game_over()
 
     def acquire_cell(self, col, row, player_id):
@@ -380,7 +368,7 @@ class GridServer:
         self.grid_ts = [[0 for _ in range(GRID_HEIGHT)] for _ in range(GRID_WIDTH)]  # ← RESET TIMESTAMPS
         self.scores = {}
         self.game_active = True
-        self.claimed_cells = 0
+        self.claimed_cells = len(self.clients)
         self.winner_id = None
         self.winner_score = 0
         self.clients_pos = {}
@@ -393,7 +381,8 @@ class GridServer:
         print("[SERVER] Processing NEW_GAME request...")
         # Store current client addresses before reset
         connected_clients = list(self.clients.keys())
-
+        # Reset server state
+        self.reset_server()
 
         for client_addr in connected_clients:
             player_id = self.clients[client_addr]['player_id']
@@ -407,6 +396,9 @@ class GridServer:
             self.scores[player_id] = 0
             #self.next_player_id += 1
             pos_x, pos_y = PLAYER_POSITIONS.get(player_id, PLAYER_POSITIONS['default'])
+            self.acquire_cell(pos_x, pos_y, player_id)
+
+
             # Send SERVER_INIT_RESPONSE with new ID
             payload = struct.pack('!Bii', player_id, pos_x, pos_y)
             response_packet = pack_packet(
@@ -418,8 +410,10 @@ class GridServer:
             self.socket.sendto(response_packet, client_addr)
             print(f"[SERVER] Re-assigned Player {player_id} to {client_addr}")
 
-            # Reset server state
-        self.reset_server()
+
+
+
+
             # Broadcast initial clean state immediately
         self.state_broadcast()
         print("[SERVER] New game started and broadcasted to all clients")

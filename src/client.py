@@ -7,9 +7,11 @@ import sys
 import time
 import pygame
 from collections import deque
-from src.protocol import unpack_packet, get_current_timestamp_ms, pack_packet, MessageType, GRID_WIDTH, GRID_HEIGHT, UNCLAIMED_ID
+from src.protocol import unpack_packet, get_current_timestamp_ms, pack_packet, MessageType, UNCLAIMED_ID
 from src.server import MAX_PACKET_SIZE
-from src.constants import  SCREEN_WIDTH, PLAYER_STRIP_HEIGHT, SCREEN_HEIGHT, CELL_SIZE, WHITE, BLACK, GRAY, LIGHT_GRAY, DARK_GRAY, GRID_COLOR, BUTTON_COLOR, BUTTON_HOVER_COLOR, STRIP_BG_COLOR, PLAYER_COLORS, CONNECTION_TIMEOUT
+from src.constants import SCREEN_WIDTH, PLAYER_STRIP_HEIGHT, SCREEN_HEIGHT, CELL_SIZE, WHITE, BLACK, GRAY, LIGHT_GRAY, \
+    DARK_GRAY, GRID_COLOR, BUTTON_COLOR, BUTTON_HOVER_COLOR, STRIP_BG_COLOR, PLAYER_COLORS, CONNECTION_TIMEOUT, \
+    MAX_CLIENTS, GRID_WIDTH, GRID_HEIGHT
 from src.UI_elements import Button
 import threading
 
@@ -80,24 +82,25 @@ class GridClient:
         index = row * GRID_WIDTH + col
         # Bounds check
         if not (0 <= row < GRID_HEIGHT and 0 <= col < GRID_WIDTH):
+            print(f"[CLIENT] Move to ({row}, {col}) is out of bounds")
             return False
 
         if self.grid_state[index] != UNCLAIMED_ID and self.grid_state[index] != self.client_id:
             print(f"[CLIENT] Cell ({row}, {col}) is already claimed")
             return False
 
-        # check if the cell is adjacent (one step up, down, left, or right)
-        dx = abs(col - self.pos_x) # change in x/column
-        dy = abs(row - self.pos_y) # change in y/row
-        # dx  = 1, dy = 0 -> move right
-        if  not (((dx == 1 and dy == 0) or
-                 (dx == 0 and dy == 1))):
-            print(f"[CLIENT] Move to ({row}, {col}) is not adjacent to current position ({self.pos_x}, {self.pos_y}) , dx: {dx}, dy: {dy}")
-            return False
+        # # check if the cell is adjacent (one step up, down, left, or right)
+        # dx = abs(col - self.pos_x) # change in x/column
+        # dy = abs(row - self.pos_y) # change in y/row
+        # # dx  = 1, dy = 0 -> move right
+        # if  not (((dx == 1 and dy == 0) or
+        #          (dx == 0 and dy == 1))):
+        #     print(f"[CLIENT] Move to ({row}, {col}) is not adjacent to current position ({self.pos_x}, {self.pos_y}) , dx: {dx}, dy: {dy}")
+        #     return False
 
 
         return True
-        pass
+
 
     def send_hello(self):
         """Send hello message to server."""
@@ -166,7 +169,7 @@ class GridClient:
             self.connected = True
 
             # Parse payload
-            GRID_SIZE_BYTES = GRID_WIDTH * GRID_HEIGHT  # 400
+            GRID_SIZE_BYTES = GRID_WIDTH * GRID_HEIGHT
             if len(payload) < GRID_SIZE_BYTES + 1:
                 return  # Malformed payload
 
@@ -384,8 +387,8 @@ class GridClient:
 
         # 3. Grid Lines
         for x in range(0, SCREEN_WIDTH, CELL_SIZE):
-            pygame.draw.line(self.screen, GRID_COLOR, (x, 0), (x, 600))
-        for y in range(0, 600, CELL_SIZE):
+            pygame.draw.line(self.screen, GRID_COLOR, (x, 0), (x, SCREEN_WIDTH))
+        for y in range(0, SCREEN_WIDTH, CELL_SIZE):
             pygame.draw.line(self.screen, GRID_COLOR, (0, y), (SCREEN_WIDTH, y))
 
         # # 4. Players (cursors)
@@ -420,7 +423,7 @@ class GridClient:
 
     def draw_player_strip(self):
         """Draw horizontal player strip below the grid."""
-        strip_y = 600
+        strip_y = SCREEN_WIDTH
 
         # Background
         pygame.draw.rect(self.screen, STRIP_BG_COLOR, (0, strip_y, SCREEN_WIDTH, PLAYER_STRIP_HEIGHT))
@@ -429,11 +432,11 @@ class GridClient:
         pygame.draw.line(self.screen, DARK_GRAY, (0, strip_y), (SCREEN_WIDTH, strip_y), 2)
 
         # Get sorted player list (max 4)
-        players = sorted(self.player_scores.keys())[:4]
+        players = sorted(self.player_scores.keys())[:MAX_CLIENTS]
         if not players:
             return
 
-        slot_width = SCREEN_WIDTH // 4
+        slot_width = SCREEN_WIDTH / MAX_CLIENTS
 
         for idx, p_id in enumerate(players):
             x_start = idx * slot_width
@@ -672,7 +675,7 @@ class GridClient:
         self.screen.blit(text_surface, text_rect)
 
         # Subtitle
-        subtitle = "Maximum 4 players reached"
+        subtitle = f"Maximum {MAX_CLIENTS} players reached"
         subtitle_surface = self.font.render(subtitle, True, (200, 200, 200))
         subtitle_rect = subtitle_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 20))
         self.screen.blit(subtitle_surface, subtitle_rect)
