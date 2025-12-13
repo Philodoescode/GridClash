@@ -617,13 +617,13 @@ class GridClient:
                     elif event.type == pygame.KEYDOWN:
                         if not self.game_over:
                             match event.key:
-                                case pygame.K_UP:
+                                case pygame.K_UP | pygame.K_w:
                                     self.send_acquire_request(self.pos_y - 1, self.pos_x)
-                                case pygame.K_DOWN:
+                                case pygame.K_DOWN | pygame.K_s:
                                     self.send_acquire_request(self.pos_y + 1, self.pos_x)
-                                case pygame.K_LEFT:
+                                case pygame.K_LEFT | pygame.K_a:
                                     self.send_acquire_request(self.pos_y, self.pos_x - 1)
-                                case pygame.K_RIGHT:
+                                case pygame.K_RIGHT | pygame.K_d:
                                     self.send_acquire_request(self.pos_y, self.pos_x + 1)
                                 case _:
                                     pass
