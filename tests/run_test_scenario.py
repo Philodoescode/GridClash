@@ -1,4 +1,4 @@
-#!/usr/bin/env -S python3
+#!/usr/bin/env python3
 import argparse
 import csv
 import math
@@ -14,6 +14,7 @@ import statistics
 import json
 import numpy as np
 
+
 # =============================================================================
 # Configuration
 # =============================================================================
@@ -24,24 +25,26 @@ class TestScenario:
     netem_cmd: str
     criteria: Dict[str, float]
 
+
 SCENARIOS = {
     "baseline": TestScenario(
-        "Baseline", "", 
+        "Baseline", "",
         {"updates_per_sec": 20, "avg_latency_ms": 50, "cpu_percent": 60}
     ),
     "loss_2": TestScenario(
-        "Loss 2%", "loss 2%", 
+        "Loss 2%", "loss 2%",
         {"mean_position_error": 0.5, "p95_position_error": 1.5}
     ),
     "loss_5": TestScenario(
-        "Loss 5%", "loss 5%", 
-        {"critical_event_delivery": 0.99} 
+        "Loss 5%", "loss 5%",
+        {"critical_event_delivery": 0.99}
     ),
     "delay_100ms": TestScenario(
-        "Delay 100ms", "delay 100ms", 
+        "Delay 100ms", "delay 100ms",
         {"system_stable": True}
     )
 }
+
 
 # =============================================================================
 # Utilities
@@ -68,7 +71,7 @@ class CPUMonitor:
             while self.running:
                 try:
                     v = proc.cpu_percent(interval=self.interval)
-                    self.samples.append(v)
+                    self.samples.append((time.time(), v))
                 except:
                     break
         except ImportError:
@@ -81,7 +84,7 @@ class CPUMonitor:
 
     def get_avg(self):
         if not self.samples: return 0.0
-        return sum(self.samples) / len(self.samples)
+        return sum(v for t, v in self.samples) / len(self.samples)
 
 
 # =============================================================================
@@ -98,9 +101,11 @@ class result_container:
         self.duration = 0
         self.cpu_usage = 0
 
+
 def run_command(cmd, shell=False):
     # print(f"[CMD] {cmd if isinstance(cmd, str) else ' '.join(cmd)}")
     return subprocess.Popen(cmd, shell=shell)
+
 
 def apply_netem(interface, cmd):
     if not cmd:
@@ -115,9 +120,11 @@ def apply_netem(interface, cmd):
         subprocess.run(full_cmd, shell=True)
     return True
 
+
 def remove_netem(interface):
     cmd = f"sudo tc qdisc del dev {interface} root"
-    subprocess.run(cmd, shell=True, stderr=subprocess.DEVNULL) # Ignore error if not exists
+    subprocess.run(cmd, shell=True, stderr=subprocess.DEVNULL)  # Ignore error if not exists
+
 
 def main():
     parser = argparse.ArgumentParser(description="Run GridClash Test Scenario")
@@ -126,28 +133,29 @@ def main():
     parser.add_argument("--interface", default="lo", help="Network interface for netem")
     parser.add_argument("--clients", type=int, default=4, help="Number of clients")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    
+
     args = parser.parse_args()
-    
+
     scenario = SCENARIOS[args.scenario]
     timestamp = int(time.time())
-    
+
     # Directory setup
     base_dir = os.path.dirname(os.path.abspath(__file__))
     results_dir = os.path.join(base_dir, "results", f"{timestamp}_{args.seed}")
     os.makedirs(results_dir, exist_ok=True)
-    
+
     print(f"=== Starting Test: {scenario.name} ===")
     print(f"Output Directory: {results_dir}")
-    
+
     # Netem
-    remove_netem(args.interface) # Cleanup first
+    remove_netem(args.interface)  # Cleanup first
     apply_netem(args.interface, scenario.netem_cmd)
-    
+
     # PCAP
     pcap_file = os.path.join(results_dir, "trace.pcap")
-    pcap_proc = run_command(["sudo", "tcpdump", "-i", args.interface, "-w", pcap_file, "port", "12000", "-q"], shell=False)
-    
+    pcap_proc = run_command(["sudo", "tcpdump", "-i", args.interface, "-w", pcap_file, "port", "12000", "-q"],
+                            shell=False)
+
     # Start Server
     server_script = os.path.join(base_dir, "instrumented_server.py")
     server_log = open(os.path.join(results_dir, "server_stdout.log"), "w")
@@ -155,12 +163,12 @@ def main():
         [sys.executable, "-u", server_script, "--port", "12000", "--log-dir", results_dir],
         stdout=server_log, stderr=server_log
     )
-    time.sleep(2) # Wait for server start
-    
+    time.sleep(2)  # Wait for server start
+
     # CPU Monitor
     cpu_mon = CPUMonitor(server_proc.pid)
     cpu_mon.start()
-    
+
     # Start Clients
     client_script = os.path.join(base_dir, "instrumented_client.py")
     client_procs = []
@@ -168,18 +176,18 @@ def main():
     for i in range(args.clients):
         # Determine unique seed per client
         c_seed = args.seed + i
-        
+
         # Open client log file
         c_log = open(os.path.join(results_dir, f"client_{i}_stdout.log"), "w")
         client_logs.append(c_log)
-        
+
         # Use python to run client
         proc = subprocess.Popen(
             [sys.executable, "-u", client_script, "--id", str(i), "--log-dir", results_dir, "--seed", str(c_seed)],
             stdout=c_log, stderr=c_log
         )
         client_procs.append(proc)
-        
+
     print(f"Running for {args.duration} seconds...")
     try:
         start_time = time.time()
@@ -190,7 +198,7 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         print("Interrupted by user.")
-        
+
     # Cleanup
     print("Stopping processes...")
     cpu_mon.stop()
@@ -198,22 +206,23 @@ def main():
         p.terminate()
     server_proc.terminate()
     pcap_proc.terminate()
-    
+
     for p in client_procs: p.wait()
     server_proc.wait()
     pcap_proc.wait()
-    
+
     remove_netem(args.interface)
     server_log.close()
     for f in client_logs:
         f.close()
-    
+
     # Post Processing
     print("Processing results...")
-    stats = process_results(results_dir, args.duration, args.clients, scenario)
+    stats = process_results(results_dir, args.duration, args.clients, scenario, cpu_mon)
     stats.cpu_usage = cpu_mon.get_avg()
     save_summary_json(stats, scenario, results_dir)
     print_report(stats, scenario)
+
 
 # =============================================================================
 # Post Processing
@@ -236,70 +245,167 @@ def load_csv(path):
             data.append(clean_row)
     return data
 
-def process_results(results_dir, duration, num_clients, scenario):
+
+def process_results(results_dir, duration, num_clients, scenario, cpu_mon=None):
     # Load Server Positions
     server_pos_file = os.path.join(results_dir, "server_positions.csv")
     server_pos_raw = load_csv(server_pos_file)
-    
+
     # Index server positions: (client_id) -> list of (ts, x, y) sorted by ts
     server_pos_lookup = {}
     for row in server_pos_raw:
         pid = int(row['client_id'])
         if pid not in server_pos_lookup:
             server_pos_lookup[pid] = []
+        if pid not in server_pos_lookup:
+            server_pos_lookup[pid] = []
         server_pos_lookup[pid].append((row['timestamp_ms'], row['x'], row['y']))
-    
+
     for pid in server_pos_lookup:
         server_pos_lookup[pid].sort(key=lambda x: x[0])
 
+    # Pre-sort CPU samples (ts, val)
+    cpu_samples = cpu_mon.samples if cpu_mon else []
+    cpu_samples.sort(key=lambda x: x[0])
+
+    detailed_rows = []
+    detailed_headers = [
+        "Metric", "Description", "client_id", "snapshot_id", "seq_num",
+        "server_timestamp_ms", "recv_time_ms", "latency_ms", "jitter_ms",
+        "perceived_position_error", "cpu_percent", "bandwidth_per_client_kbps"
+    ]
+
     container = result_container()
     container.duration = duration
-    
+
     # Load Client Data
     for i in range(num_clients):
         # Metrics
         metric_file = os.path.join(results_dir, f"client_{i}_metrics.csv")
         metrics = load_csv(metric_file)
-        
+
         # Positions
         pos_file = os.path.join(results_dir, f"client_{i}_positions.csv")
         positions = load_csv(pos_file)
-        
+
         container.total_packets += len(metrics)
-        
+
         for m in metrics:
             container.latency.append(m['latency_ms'])
             container.jitter.append(m['jitter_ms'])
-            container.total_bytes += m['bandwidth_per_client_kbps'] # Stored implies bytes in this column
-            
+            container.total_bytes += m['bandwidth_per_client_kbps']  # Stored implies bytes in this column
+
         # Calculate Position Error
         # Iterate client positions and find authoritative server pos
         for p in positions:
             c_ts = p['timestamp_ms']
             c_x, c_y = p['x'], p['y']
             c_id = int(p['client_id'])
-            
+
             # Skip unassigned IDs
             if c_id not in server_pos_lookup:
                 continue
-                
+
             s_data = server_pos_lookup[c_id]
-            
-            # Simple matching: find server pos with closest timestamp within 100ms
+
+            # Simple matching: find server pos with closest timestamp within 200ms
             nearby = [s for s in s_data if abs(s[0] - c_ts) <= 200]
             if nearby:
                 # closest
                 best = min(nearby, key=lambda s: abs(s[0] - c_ts))
                 s_x, s_y = best[1], best[2]
-                dist = math.sqrt((c_x - s_x)**2 + (c_y - s_y)**2)
+                dist = math.sqrt((c_x - s_x) ** 2 + (c_y - s_y) ** 2)
                 container.position_error.append(dist)
-    
+
+        # Generate Detailed CSV Rows
+        # Client positions for lookup
+        c_pos_lookup = [(p['timestamp_ms'], p['x'], p['y']) for p in positions]
+        c_pos_lookup.sort(key=lambda x: x[0])
+
+        # Calculate Avg Bandwidth for this client
+        # total_bytes is sum of len(data) from metric rows
+        total_bytes_client = sum(m['bandwidth_per_client_kbps'] for m in metrics)  # stored as bytes
+        avg_bw_kbps = 0
+        if duration > 0:
+            avg_bw_kbps = (total_bytes_client * 8) / 1000 / duration
+
+        for m in metrics:
+            # m has: client_id, snapshot_id, seq_num, server_timestamp_ms, recv_time_ms, latency_ms, jitter_ms, ...
+            recv_ts = m['recv_time_ms']
+            client_id = int(m['client_id'])
+
+            # 1. Perceived Position Error at recv_ts
+            # Find client displayed pos at recv_ts
+            # Find server authoritative pos at recv_ts
+            c_pos = _find_closest_pos(c_pos_lookup, recv_ts)
+            s_pos = _find_closest_pos(server_pos_lookup.get(client_id, []), recv_ts)
+
+            pos_error = 0.0
+            if c_pos and s_pos:
+                pos_error = math.sqrt((c_pos[1] - s_pos[1]) ** 2 + (c_pos[2] - s_pos[2]) ** 2)
+
+            # 2. CPU Percent at recv_ts (convert recv_ts ms to sec for comparison)
+            # Find closest CPU sample
+            cpu_val = 0.0
+            if cpu_samples:
+                query_t = recv_ts / 1000.0
+                closest_cpu = min(cpu_samples, key=lambda x: abs(x[0] - query_t))
+                cpu_val = closest_cpu[1]
+
+            row = {
+                "Metric": scenario.name,
+                "Description": "Packet Snapshot Data",
+                "client_id": client_id,
+                "snapshot_id": m['snapshot_id'],
+                "seq_num": m['seq_num'],
+                "server_timestamp_ms": m['server_timestamp_ms'],
+                "recv_time_ms": m['recv_time_ms'],
+                "latency_ms": m['latency_ms'],
+                "jitter_ms": m['jitter_ms'],
+                "perceived_position_error": pos_error,
+                "cpu_percent": cpu_val,
+                "bandwidth_per_client_kbps": avg_bw_kbps
+            }
+            detailed_rows.append(row)
+
+    # Write Detailed CSV
+    detailed_file = os.path.join(results_dir, "detailed_metrics.csv")
+    with open(detailed_file, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=detailed_headers)
+        writer.writeheader()
+        writer.writerows(detailed_rows)
+
     return container
+
+
+def _find_closest_pos(pos_list, ts, threshold=200):
+    if not pos_list:
+        return None
+    # Assuming pos_list is sorted by ts
+    # Binary search could be better but list is likely moderate size or linear scan ok
+    # Let's use simple filtered min for robustness as in original code
+    # Optimization: bisect
+    import bisect
+    # pos_list elements are (ts, x, y)
+    keys = [p[0] for p in pos_list]
+    idx = bisect.bisect_left(keys, ts)
+
+    candidates = []
+    if idx < len(pos_list):
+        candidates.append(pos_list[idx])
+    if idx > 0:
+        candidates.append(pos_list[idx - 1])
+
+    valid = [p for p in candidates if abs(p[0] - ts) <= threshold]
+    if not valid:
+        return None
+    return min(valid, key=lambda p: abs(p[0] - ts))
+
 
 def stats_dict(data):
     if not data:
         return {"mean": 0, "median": 0, "p95": 0}
-    
+
     # Use numpy for accurate statistical analysis
     # This handles percentiles correctly even with skewed distributions
     return {
@@ -308,15 +414,16 @@ def stats_dict(data):
         "p95": float(np.percentile(data, 95))
     }
 
+
 def save_summary_json(stats, scenario, results_dir):
     lat = stats_dict(stats.latency)
     jit = stats_dict(stats.jitter)
     err = stats_dict(stats.position_error)
-    
+
     upd_per_sec = 0
     if stats.duration > 0:
-        upd_per_sec = (stats.total_packets / stats.duration) / 4 
-    
+        upd_per_sec = (stats.total_packets / stats.duration) / 4
+
     bw_kbps = 0
     if stats.duration > 0:
         total_bits = stats.total_bytes * 8
@@ -336,28 +443,30 @@ def save_summary_json(stats, scenario, results_dir):
         },
         "criteria": scenario.criteria
     }
-    
+
     with open(os.path.join(results_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=4)
+
 
 def print_report(stats, scenario):
     lat = stats_dict(stats.latency)
     jit = stats_dict(stats.jitter)
     err = stats_dict(stats.position_error)
-    
+
     upd_per_sec = 0
     if stats.duration > 0:
-        upd_per_sec = (stats.total_packets / stats.duration) / 4 # assuming 4 clients hardcoded in calculation here or pass num_clients
-    
+        upd_per_sec = (
+                                  stats.total_packets / stats.duration) / 4  # assuming 4 clients hardcoded in calculation here or pass num_clients
+
     # Calculate bytes/sec/client (kbps)
     bw_kbps = 0
     if stats.duration > 0:
         total_bits = stats.total_bytes * 8
         bw_kbps = (total_bits / 1000) / stats.duration / 4
-        
-    print("\n" + "="*40)
+
+    print("\n" + "=" * 40)
     print(f"FINAL REPORT: {scenario.name}")
-    print("="*40)
+    print("=" * 40)
     print(f"Updates/Sec (per client): {upd_per_sec:.2f}")
     print(f"Avg Bandwidth (kbps): {bw_kbps:.2f}")
     print(f"Avg Server CPU: {stats.cpu_usage:.1f}%")
@@ -367,50 +476,51 @@ def print_report(stats, scenario):
     print(f"{'Latency (ms)':<15} | {lat['mean']:<10.2f} | {lat['median']:<10.2f} | {lat['p95']:<10.2f}")
     print(f"{'Jitter (ms)':<15} | {jit['mean']:<10.2f} | {jit['median']:<10.2f} | {jit['p95']:<10.2f}")
     print(f"{'Pos Error':<15} | {err['mean']:<10.4f} | {err['median']:<10.4f} | {err['p95']:<10.4f}")
-    print("="*40)
-    
+    print("=" * 40)
+
     # Acceptance Criteria Check
     passed = True
     c = scenario.criteria
     print("Acceptance Criteria:")
-    
+
     if "updates_per_sec" in c:
         p = upd_per_sec >= c["updates_per_sec"]
         print(f"  Updates/Sec >= {c['updates_per_sec']}: {'PASS' if p else 'FAIL'}")
         if not p: passed = False
-        
+
     if "avg_latency_ms" in c:
         p = lat['mean'] <= c["avg_latency_ms"]
         print(f"  Avg Latency <= {c['avg_latency_ms']}ms: {'PASS' if p else 'FAIL'}")
         if not p: passed = False
-        
+
     if "cpu_percent" in c:
         p = stats.cpu_usage < c["cpu_percent"]
         print(f"  Avg CPU < {c['cpu_percent']}%: {'PASS' if p else 'FAIL'}")
         if not p: passed = False
-    
+
     if "mean_position_error" in c:
         p = err['mean'] <= c["mean_position_error"]
         print(f"  Mean Pos Error <= {c['mean_position_error']}: {'PASS' if p else 'FAIL'}")
         if not p: passed = False
-        
+
     if "p95_position_error" in c:
         p = err['p95'] <= c["p95_position_error"]
         print(f"  95% Pos Error <= {c['p95_position_error']}: {'PASS' if p else 'FAIL'}")
         if not p: passed = False
-        
+
     if "critical_event_delivery" in c:
         # Expected packets ~ 20 * duration * 4?
         # A bit fuzzy.
         pass
-        
+
     if "system_stable" in c:
-        print(f"  System Stable: PASS") 
+        print(f"  System Stable: PASS")
 
     if passed:
         print("\nOVERALL TEST STATUS: PASS")
     else:
         print("\nOVERALL TEST STATUS: FAIL")
+
 
 if __name__ == "__main__":
     main()
