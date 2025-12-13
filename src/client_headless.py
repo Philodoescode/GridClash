@@ -5,27 +5,37 @@ import socket
 import struct
 import sys
 import time
-import pygame
 from collections import deque
 import threading
 
+# Headless mode detection - check before importing pygame
+_HEADLESS_MODE = os.environ.get('GRIDCLASH_HEADLESS', '').lower() in ('1', 'true', 'yes')
 
+# Only import pygame if not in headless mode
+if not _HEADLESS_MODE:
+    try:
+        import pygame
+        from src.UI_elements import Button
 
+        _PYGAME_AVAILABLE = True
+    except ImportError:
+        _PYGAME_AVAILABLE = False
+        _HEADLESS_MODE = True
+else:
+    pygame = None
+    Button = None
+    _PYGAME_AVAILABLE = False
 
 # import from parent directory
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-
-
 from src.protocol import unpack_packet, get_current_timestamp_ms, pack_packet, MessageType, UNCLAIMED_ID
 from src.server import MAX_PACKET_SIZE
 from src.constants import SCREEN_WIDTH, PLAYER_STRIP_HEIGHT, SCREEN_HEIGHT, CELL_SIZE, WHITE, BLACK, GRAY, LIGHT_GRAY, \
     DARK_GRAY, GRID_COLOR, BUTTON_COLOR, BUTTON_HOVER_COLOR, STRIP_BG_COLOR, PLAYER_COLORS, CONNECTION_TIMEOUT, \
     MAX_CLIENTS, GRID_WIDTH, GRID_HEIGHT
-from src.UI_elements import Button
-
 
 
 class GridClient:
@@ -73,8 +83,11 @@ class GridClient:
         # Reliability variables
         self.seq_num = 0
         self.pending_requests = {}  # Stores requests waiting for ACKs
-        self.rtt = 100.0            # Estimated Round Trip Time (ms)
-        self.rtt_dev = 0.0          # RTT Deviation
+        self.rtt = 100.0  # Estimated Round Trip Time (ms)
+        self.rtt_dev = 0.0  # RTT Deviation
+
+        # Headless mode flag
+        self.headless_mode = _HEADLESS_MODE
 
     def is_legal_move(self, row, col):
         """Check if move is legal."""
@@ -98,9 +111,7 @@ class GridClient:
         #     #print(f"[CLIENT] Move to ({row}, {col}) is not adjacent to current position ({self.pos_x}, {self.pos_y}) , dx: {dx}, dy: {dy}")
         #     return False
 
-
         return True
-
 
     def send_hello(self):
         """Send hello message to server."""
@@ -177,13 +188,14 @@ class GridClient:
             num_players = payload[GRID_SIZE_BYTES]
             offset = GRID_SIZE_BYTES + 1
 
-            BYTES_PER_PLAYER = 19 # ← UPDATED: B H i i i i (ID, score, x, y, dx, dy)
+            BYTES_PER_PLAYER = 19  # ← UPDATED: B H i i i i (ID, score, x, y, dx, dy)
             # Track which players are in this update
             current_players = set()
 
             for _ in range(num_players):
                 if offset + BYTES_PER_PLAYER <= len(payload):
-                    p_id, score, pos_x, pos_y, dx, dy = struct.unpack('!BHiiii', payload[offset:offset + BYTES_PER_PLAYER])
+                    p_id, score, pos_x, pos_y, dx, dy = struct.unpack('!BHiiii',
+                                                                      payload[offset:offset + BYTES_PER_PLAYER])
 
                     # ← DELTA RECOVERY
                     if self.last_seq_num != -1 and packet.seq_num == self.last_seq_num + 2:
@@ -255,11 +267,10 @@ class GridClient:
             'row': row, 'col': col, 'ts': client_ts,
             'timer': timer, 'retries': 0, 'send_time': get_current_timestamp_ms()
         }
-        print(f"[CLIENT {self.client_id}] → ACQUIRE_REQUEST ({row},{col}) seq={self.seq_num} ts={client_ts}")
+        print(f"[CLIENT {self.client_id}] -> ACQUIRE_REQUEST ({row},{col}) seq={self.seq_num} ts={client_ts}")
 
-    
     def _retransmit_request(self, seq):
-        """Retransmit ACQUIRE_REQUEST on timeout."""   
+        """Retransmit ACQUIRE_REQUEST on timeout."""
         if seq not in self.pending_requests:
             return
         req = self.pending_requests[seq]
@@ -345,7 +356,11 @@ class GridClient:
             self.visual_players[p_id] = (new_vx, new_vy)
 
     def init_graphics(self):
-        """Initialize Pygame graphics (Phase 3)."""
+        """Initialize Pygame graphics (Phase 3). Skipped in headless mode."""
+        if self.headless_mode or not _PYGAME_AVAILABLE:
+            print("[CLIENT] Running in headless mode - no graphics")
+            return
+
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption(f"GridClash - Player {self.client_id}")
@@ -369,7 +384,6 @@ class GridClient:
                     color = PLAYER_COLORS.get(owner_id, PLAYER_COLORS['default'])
                     rect = (col * CELL_SIZE, row * CELL_SIZE, CELL_SIZE, CELL_SIZE)
                     pygame.draw.rect(self.screen, color, rect)
-
 
         # 2.5 Highlight current player position
         highlight_color = (255, 255, 255, 120)  # semi-transparent white overlay
@@ -402,7 +416,6 @@ class GridClient:
         # 5. Player Strip
         self.draw_player_strip()
 
-
         # 6. Server Full Overlay
         if self.server_full:
             self.draw_server_full_overlay()
@@ -413,10 +426,6 @@ class GridClient:
             # 8. Game Over Overlay
             if self.game_over and self.winner_info:
                 self.draw_game_over_overlay()
-
-
-
-
 
         # 9. Display Flip
         pygame.display.flip()
@@ -430,7 +439,6 @@ class GridClient:
 
         # Dividing lines
         pygame.draw.line(self.screen, DARK_GRAY, (0, strip_y), (SCREEN_WIDTH, strip_y), 2)
-
 
         players = sorted(self.player_scores.keys())[:MAX_CLIENTS]
         if not players:
@@ -488,7 +496,7 @@ class GridClient:
             center_x = x_start + slot_width / 2
 
             # Center "SCORE"
-            label_rect = score_label_surface.get_rect(center=(center_x +25, strip_y + 50))
+            label_rect = score_label_surface.get_rect(center=(center_x + 25, strip_y + 50))
             self.screen.blit(score_label_surface, label_rect)
 
             # Draw the numeric score right under it
@@ -498,8 +506,8 @@ class GridClient:
             # Vertical divider (except for last player)
             if idx < len(players) - 1:
                 pygame.draw.line(self.screen, LIGHT_GRAY,
-                               (x_start + slot_width, strip_y),
-                               (x_start + slot_width, strip_y + PLAYER_STRIP_HEIGHT))
+                                 (x_start + slot_width, strip_y),
+                                 (x_start + slot_width, strip_y + PLAYER_STRIP_HEIGHT))
 
     def draw_connection_lost(self):
         """Draw connection lost indicator."""
@@ -550,7 +558,7 @@ class GridClient:
 
         if not self.new_game_button:
             self.new_game_button = Button(button_x, button_y, button_width, button_height,
-                                         "New Game", self.font)
+                                          "New Game", self.font)
 
         mouse_pos = pygame.mouse.get_pos()
         self.new_game_button.draw(self.screen, mouse_pos)
@@ -575,7 +583,7 @@ class GridClient:
         packet = pack_packet(MessageType.NEW_GAME, 0, 0, get_current_timestamp_ms(), payload)
         self.socket.sendto(packet, self.server_address)
         print(f"[CLIENT {self.client_id}] Sent new game request")
-        #self.reset_game_state()
+        # self.reset_game_state()
         self.waiting_for_new_game = True
         self.new_game_button = None
 
@@ -587,7 +595,7 @@ class GridClient:
                 self.connected = False
 
     def run(self):
-        """Main client loop (Phase 4)."""
+        """Main client loop (Phase 4). Supports both GUI and headless modes."""
         self.init_graphics()
         self.send_hello()
 
@@ -595,40 +603,47 @@ class GridClient:
         self.socket.setblocking(False)
 
         running = True
-        print(f"[CLIENT] Graphics started. Window open.")
+        if self.headless_mode:
+            print(f"[CLIENT] Started in headless mode.")
+        else:
+            print(f"[CLIENT] Graphics started. Window open.")
 
         try:
             while running:
                 current_time = time.time()
-                dt = self.clock.get_time() / 1000.0  # delta time in seconds (from tick)
 
+                # Delta time calculation
+                if self.clock:
+                    dt = self.clock.get_time() / 1000.0
+                else:
+                    dt = 0.016  # ~60 FPS default for headless
 
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        running = False
-                    elif event.type == pygame.MOUSEBUTTONDOWN:
-                        # Check for New Game button click first
-                        if self.game_over and self.new_game_button:
-                            if self.new_game_button.is_clicked(event.pos):
-                                self.request_new_game()
-                                continue  # Skip grid click handling
+                # --- 1. Input/Events (GUI mode only) ---
+                if not self.headless_mode and _PYGAME_AVAILABLE:
+                    for event in pygame.event.get():
+                        if event.type == pygame.QUIT:
+                            running = False
+                        elif event.type == pygame.MOUSEBUTTONDOWN:
+                            # Check for New Game button click first
+                            if self.game_over and self.new_game_button:
+                                if self.new_game_button.is_clicked(event.pos):
+                                    self.request_new_game()
+                                    continue  # Skip grid click handling
 
-                        # Handle keyboard clicks (only if not game over)
-                    elif event.type == pygame.KEYDOWN:
-                        if not self.game_over:
-                            match event.key:
-                                case pygame.K_UP | pygame.K_w:
-                                    self.send_acquire_request(self.pos_y - 1, self.pos_x)
-                                case pygame.K_DOWN | pygame.K_s:
-                                    self.send_acquire_request(self.pos_y + 1, self.pos_x)
-                                case pygame.K_LEFT | pygame.K_a:
-                                    self.send_acquire_request(self.pos_y, self.pos_x - 1)
-                                case pygame.K_RIGHT | pygame.K_d:
-                                    self.send_acquire_request(self.pos_y, self.pos_x + 1)
-                                case _:
-                                    pass
-
-
+                            # Handle keyboard clicks (only if not game over)
+                        elif event.type == pygame.KEYDOWN:
+                            if not self.game_over:
+                                match event.key:
+                                    case pygame.K_UP:
+                                        self.send_acquire_request(self.pos_y - 1, self.pos_x)
+                                    case pygame.K_DOWN:
+                                        self.send_acquire_request(self.pos_y + 1, self.pos_x)
+                                    case pygame.K_LEFT:
+                                        self.send_acquire_request(self.pos_y, self.pos_x - 1)
+                                    case pygame.K_RIGHT:
+                                        self.send_acquire_request(self.pos_y, self.pos_x + 1)
+                                    case _:
+                                        pass
 
                 # --- 2. Network Receive (Polling) (Phase 4) ---
                 if (current_time - self.last_heartbeat_time) >= self.heartbeat_interval:
@@ -653,7 +668,7 @@ class GridClient:
                             elif pkt.msg_type == MessageType.SERVER_FULL:
                                 self.handle_server_full(data)
                             elif pkt.msg_type == MessageType.ACK or pkt.msg_type == MessageType.NACK:
-                                self.handle_ack_nack(pkt, payload)  # ← RELIABILITY    
+                                self.handle_ack_nack(pkt, payload)  # ← RELIABILITY
                 except BlockingIOError:
                     # No more data available right now
                     pass
@@ -662,10 +677,14 @@ class GridClient:
                 except Exception as e:
                     print(f"[NET ERROR] {e}")
 
-                # --- 3. Render (Phase 4) ---
-                self.update_visuals(dt)
-                self.draw_game()
-                self.clock.tick(60)  # Limit to 60 FPS
+                # --- 3. Render (GUI mode only) ---
+                if not self.headless_mode and self.screen:
+                    self.update_visuals(dt)
+                    self.draw_game()
+                    self.clock.tick(60)  # Limit to 60 FPS
+                else:
+                    # Headless mode: just yield CPU
+                    time.sleep(0.01)
 
         except KeyboardInterrupt:
             print(f"[CLIENT {self.client_id}] Interrupted")
@@ -673,17 +692,17 @@ class GridClient:
             if self.latencies:
                 avg_latency = sum(self.latencies) / len(self.latencies)
                 print(f"FINAL STATS: Received {self.packet_count} packets. Average latency: {avg_latency:.4f} ms")
-            try:
-                pygame.quit()
-            except Exception:
-                pass
+            if not self.headless_mode and _PYGAME_AVAILABLE:
+                try:
+                    pygame.quit()
+                except Exception:
+                    pass
             self.socket.close()
 
     def handle_server_full(self, data):
         """Process SERVER_FULL message."""
         self.server_full = True
         print("[CLIENT] Server is full. Please try again later.")
-
 
     def draw_server_full_overlay(self):
         """Draw server full screen."""
@@ -708,17 +727,23 @@ class GridClient:
         self.screen.blit(subtitle_surface, subtitle_rect)
 
 
-
 def main():
     parser = argparse.ArgumentParser(description="GridClash Client")
     parser.add_argument("--id", type=int, default=255, help="Client ID")
     parser.add_argument("--host", default="127.0.0.1", help="Server host")
     parser.add_argument("--port", type=int, default=12000, help="Server port")
     parser.add_argument("--heartbeat-interval", type=float, default=1.0, help="Heartbeat interval (seconds)")
+    parser.add_argument("--headless", action="store_true", help="Run in headless mode (no GUI)")
     args = parser.parse_args()
+
+    # Set headless mode if specified via command line
+    global _HEADLESS_MODE
+    if args.headless:
+        _HEADLESS_MODE = True
 
     client = GridClient(args.id, (args.host, args.port))
     client.heartbeat_interval = args.heartbeat_interval
+    client.headless_mode = _HEADLESS_MODE  # Apply the headless setting
     client.run()
 
 

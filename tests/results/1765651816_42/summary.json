@@ -1,0 +1,28 @@
+{
+    "scenario": "Loss 5%",
+    "timestamp": 1765651885,
+    "duration": 60,
+    "metrics": {
+        "updates_per_sec": 19.270833333333332,
+        "bandwidth_kbps": 77.85416666666667,
+        "cpu_percent": 3.413793103448276,
+        "latency": {
+            "mean": 6.0309189189189185,
+            "median": 1.0,
+            "p95": 33.0
+        },
+        "jitter": {
+            "mean": 4.103383632138611,
+            "median": 0.5908022848870356,
+            "p95": 41.678094080180585
+        },
+        "position_error": {
+            "mean": 2.3750874188121776,
+            "median": 0.0,
+            "p95": 20.518284528683193
+        }
+    },
+    "criteria": {
+        "critical_event_delivery": 0.99
+    }
+}
