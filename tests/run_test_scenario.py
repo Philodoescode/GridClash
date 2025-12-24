@@ -247,22 +247,28 @@ def load_csv(path):
 
 
 def process_results(results_dir, duration, num_clients, scenario, cpu_mon=None):
+    """
+    Process test results and calculate metrics.
+    
+    SYNCHRONIZED SAMPLING: Both server and client now log positions using the
+    same broadcast_timestamp_ms. This enables exact-match position error
+    calculation by simply joining on the timestamp.
+    """
     # Load Server Positions
     server_pos_file = os.path.join(results_dir, "server_positions.csv")
     server_pos_raw = load_csv(server_pos_file)
 
-    # Index server positions: (client_id) -> list of (ts, x, y) sorted by ts
+    # Build server position lookup: (broadcast_timestamp, client_id) -> (x, y)
+    # Using exact timestamp matching since both server and client use the same key
     server_pos_lookup = {}
     for row in server_pos_raw:
+        # Handle both old format (timestamp_ms) and new format (broadcast_timestamp_ms)
+        ts_key = 'broadcast_timestamp_ms' if 'broadcast_timestamp_ms' in row else 'timestamp_ms'
+        ts = int(row[ts_key])
         pid = int(row['client_id'])
-        if pid not in server_pos_lookup:
-            server_pos_lookup[pid] = []
-        if pid not in server_pos_lookup:
-            server_pos_lookup[pid] = []
-        server_pos_lookup[pid].append((row['timestamp_ms'], row['x'], row['y']))
-
-    for pid in server_pos_lookup:
-        server_pos_lookup[pid].sort(key=lambda x: x[0])
+        x, y = row['x'], row['y']
+        # Key is (timestamp, player_id) for exact matching
+        server_pos_lookup[(ts, pid)] = (x, y)
 
     # Pre-sort CPU samples (ts, val)
     cpu_samples = cpu_mon.samples if cpu_mon else []
@@ -295,32 +301,31 @@ def process_results(results_dir, duration, num_clients, scenario, cpu_mon=None):
             container.jitter.append(m['jitter_ms'])
             container.total_bytes += m['bandwidth_per_client_kbps']  # Stored implies bytes in this column
 
-        # Calculate Position Error
-        # Iterate client positions and find authoritative server pos
+        # Calculate Position Error using EXACT TIMESTAMP MATCHING
+        # Both server and client now use the same broadcast_timestamp_ms
         for p in positions:
-            c_ts = p['timestamp_ms']
+            # Handle both old format (timestamp_ms) and new format (broadcast_timestamp_ms)
+            ts_key = 'broadcast_timestamp_ms' if 'broadcast_timestamp_ms' in p else 'timestamp_ms'
+            c_ts = int(p[ts_key])
             c_x, c_y = p['x'], p['y']
             c_id = int(p['client_id'])
 
-            # Skip unassigned IDs
-            if c_id not in server_pos_lookup:
-                continue
-
-            s_data = server_pos_lookup[c_id]
-
-            # Simple matching: find server pos with closest timestamp within 200ms
-            nearby = [s for s in s_data if abs(s[0] - c_ts) <= 200]
-            if nearby:
-                # closest
-                best = min(nearby, key=lambda s: abs(s[0] - c_ts))
-                s_x, s_y = best[1], best[2]
+            # Exact match lookup using (timestamp, player_id) key
+            lookup_key = (c_ts, c_id)
+            if lookup_key in server_pos_lookup:
+                s_x, s_y = server_pos_lookup[lookup_key]
+                # Calculate Euclidean distance
                 dist = math.sqrt((c_x - s_x) ** 2 + (c_y - s_y) ** 2)
                 container.position_error.append(dist)
+            # If no exact match found, skip (should not happen with synchronized sampling)
 
-        # Generate Detailed CSV Rows
-        # Client positions for lookup
-        c_pos_lookup = [(p['timestamp_ms'], p['x'], p['y']) for p in positions]
-        c_pos_lookup.sort(key=lambda x: x[0])
+        # Build client position lookup for detailed metrics
+        # Key: (timestamp, client_id) -> (x, y)
+        c_pos_lookup = {}
+        for p in positions:
+            ts_key = 'broadcast_timestamp_ms' if 'broadcast_timestamp_ms' in p else 'timestamp_ms'
+            ts = int(p[ts_key])
+            c_pos_lookup[(ts, int(p['client_id']))] = (p['x'], p['y'])
 
         # Calculate Avg Bandwidth for this client
         # total_bytes is sum of len(data) from metric rows
@@ -331,24 +336,25 @@ def process_results(results_dir, duration, num_clients, scenario, cpu_mon=None):
 
         for m in metrics:
             # m has: client_id, snapshot_id, seq_num, server_timestamp_ms, recv_time_ms, latency_ms, jitter_ms, ...
-            recv_ts = m['recv_time_ms']
+            server_ts = int(m['server_timestamp_ms'])
             client_id = int(m['client_id'])
 
-            # 1. Perceived Position Error at recv_ts
-            # Find client displayed pos at recv_ts
-            # Find server authoritative pos at recv_ts
-            c_pos = _find_closest_pos(c_pos_lookup, recv_ts)
-            s_pos = _find_closest_pos(server_pos_lookup.get(client_id, []), recv_ts)
-
+            # EXACT MATCH position error calculation
+            # Both server and client logs use server_timestamp_ms as the key
+            lookup_key = (server_ts, client_id)
+            
             pos_error = 0.0
+            c_pos = c_pos_lookup.get(lookup_key)
+            s_pos = server_pos_lookup.get(lookup_key)
+            
             if c_pos and s_pos:
-                pos_error = math.sqrt((c_pos[1] - s_pos[1]) ** 2 + (c_pos[2] - s_pos[2]) ** 2)
+                pos_error = math.sqrt((c_pos[0] - s_pos[0]) ** 2 + (c_pos[1] - s_pos[1]) ** 2)
 
-            # 2. CPU Percent at recv_ts (convert recv_ts ms to sec for comparison)
+            # 2. CPU Percent at server_ts (convert ms to sec for comparison)
             # Find closest CPU sample
             cpu_val = 0.0
             if cpu_samples:
-                query_t = recv_ts / 1000.0
+                query_t = server_ts / 1000.0
                 closest_cpu = min(cpu_samples, key=lambda x: abs(x[0] - query_t))
                 cpu_val = closest_cpu[1]
 
@@ -379,6 +385,24 @@ def process_results(results_dir, duration, num_clients, scenario, cpu_mon=None):
 
 
 def _find_closest_pos(pos_list, ts, threshold=200):
+    """
+    DEPRECATED: This function is no longer used with synchronized sampling.
+    
+    With the new unified broadcast_timestamp_ms approach, both server and client
+    logs use the exact same timestamp, enabling O(1) dictionary lookup instead
+    of this fuzzy timestamp matching.
+    
+    Kept for backward compatibility when processing old test data that used
+    different sampling rates for server (20Hz) and client (~1000Hz).
+    
+    Args:
+        pos_list: List of (ts, x, y) tuples, sorted by ts
+        ts: Target timestamp to find
+        threshold: Maximum time difference allowed (ms)
+    
+    Returns:
+        Closest position tuple (ts, x, y) or None if no match within threshold
+    """
     if not pos_list:
         return None
     # Assuming pos_list is sorted by ts
