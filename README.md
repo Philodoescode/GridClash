@@ -51,30 +51,84 @@ IDE.
 
 ## 📝 Running Tests
 
-### Baseline Performance Test
+### Network Test Suite (Linux/WSL Required)
 
-The baseline test suite evaluates server performance under concurrent client load:
+The network test suite evaluates server performance under various network conditions using `tc` (traffic control) for network simulation.
+
+> **Note**: These tests require Linux or WSL (Windows Subsystem for Linux) as they use `tc` and `tcpdump` which are Linux-specific tools.
+
+#### Prerequisites
 
 ```bash
-uv run tests/run_baseline.py
+# Install required tools (Ubuntu/Debian)
+sudo apt install iproute2 tcpdump
 ```
 
-#### What the Test Does
+#### Running All Tests
 
-- **Starts 1 server** listening on port 12000
-- **Spawns 4 concurrent clients** that connect and receive game state updates
-- **Runs for 30 seconds** collecting metrics
-- **Monitors CPU usage** at 0.5-second intervals
-- **Generates reports** in the `logs/` directory
+```bash
+# Navigate to project directory
+cd ~/projects/gridclash
+
+# Install dependencies
+uv sync
+
+# Run the full test suite (requires sudo for tc/tcpdump)
+uv run bash tests/run_all_tests.sh
+```
+
+#### Running a Single Scenario
+
+```bash
+# Run a specific test scenario
+uv run python tests/run_test_scenario.py <scenario> --duration 60 --clients 4
+```
+
+Available scenarios:
+| Scenario | Description |
+|----------|-------------|
+| `baseline` | Clean network, no impairment |
+| `loss_2` | 2% packet loss |
+| `loss_5` | 5% packet loss |
+| `delay_100ms` | 100ms network delay |
 
 #### Test Outputs
 
-Generated files in `logs/`:
+Results are saved in `tests/results/<timestamp>/`:
 
-- `server.log` — Server output and debug messages
-- `client_*.log` — Per-client connection logs and latency data
-- `server_cpu_usage.csv` — Raw CPU utilization time series
-- `final_summary_report.txt` — Consolidated metrics summary
+| File | Description |
+|------|-------------|
+| `server_positions.csv` | Server's authoritative player positions |
+| `client_*_positions.csv` | Client's perceived positions |
+| `client_*_metrics.csv` | Latency, jitter, and packet data |
+| `detailed_metrics.csv` | Combined analysis with position error |
+| `summary.json` | Aggregated statistics |
+| `suite_report_latest.csv` | Cross-scenario comparison |
+
+#### Sample Test Report
+
+```
+====================================================================================================
+GRIDCLASH TEST SUITE REPORT
+====================================================================================================
+Scenario        | Lat(Avg)   | Jit(Avg)   | Err(Avg)   | Err(95%)   | CPU%   | Status
+----------------------------------------------------------------------------------------------------
+Baseline        | 4.02       | 2.10       | 0.0078     | 0.0000     | 4.1    | PASS
+Loss 2%         | 4.00       | 1.95       | 0.0385     | 0.0000     | 4.0    | PASS
+Loss 5%         | 6.04       | 4.10       | 0.2481     | 3.1623     | 3.1    | PASS
+Delay 100ms     | 102.00     | 1.20       | 0.5020     | 2.0000     | 2.9    | PASS
+----------------------------------------------------------------------------------------------------
+```
+
+#### Troubleshooting: Windows Line Endings
+
+If you encounter errors like `$'\r': command not found` when running shell scripts on Linux/WSL, the files have Windows line endings (CRLF). Fix with:
+
+```bash
+# Fix line endings for all test files
+sed -i 's/\r$//' tests/*.sh tests/*.py src/*.py
+```
+
 
 ## 🛠️ Design Mechanisms
 
@@ -107,11 +161,18 @@ Generated files in `logs/`:
 ```
 src/
   ├── __init__.py
-  ├── protocol.py      # Defines packet format & checksum system
-  ├── server.py        # Runs UDP broadcast loop
-  ├── client.py        # Connects to server, measures latency
+  ├── protocol.py         # Defines packet format & checksum system
+  ├── server.py           # Runs UDP broadcast loop
+  ├── client.py           # GUI client with pygame
+  ├── client_headless.py  # Headless client for automated testing
+  ├── constants.py        # Game configuration constants
 tests/
-  └── run_baseline.py  # CPU & latency benchmark runner
+  ├── run_all_tests.sh          # Runs full test suite
+  ├── run_test_scenario.py      # Single scenario test runner
+  ├── instrumented_server.py    # Server with position logging
+  ├── instrumented_client.py    # Client with synchronized logging
+  ├── generate_suite_report.py  # Aggregates results across scenarios
+  └── results/                  # Test output directory
 main.py                # Simple entry point
 pyproject.toml         # Project metadata & dependencies
 README.md              # Documentation

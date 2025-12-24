@@ -36,7 +36,9 @@ class InstrumentedClient(GridClient):
         
         self.pos_file = open(os.path.join(log_dir, f'client_{client_id}_positions.csv'), 'w', newline='')
         self.pos_writer = csv.writer(self.pos_file)
-        self.pos_writer.writerow(['timestamp_ms', 'client_id', 'x', 'y', 'recv_ts_ms'])
+        # broadcast_timestamp_ms is the unified timestamp from server broadcasts
+        # This matches the server's position log for exact-match error calculation
+        self.pos_writer.writerow(['broadcast_timestamp_ms', 'client_id', 'x', 'y'])
         
         self.last_recv_ts = 0
         self.last_server_ts = 0
@@ -57,9 +59,21 @@ class InstrumentedClient(GridClient):
         print(f"[INSTRUMENTED CLIENT {self.client_id}] Initialized at ({self.pos_x}, {self.pos_y})")
 
     def handle_game_state_update(self, data):
+        """
+        Handle incoming game state snapshot from server.
+        
+        SYNCHRONIZED SAMPLING: Position is logged using the server's broadcast
+        timestamp (server_ts) as the unified sync key. This ensures both server
+        and client use the exact same timestamp, enabling trivial error calculation.
+        """
         # Measure size before unpacking
         self.bytes_received += len(data)
         recv_ts = get_current_timestamp_ms()
+        
+        # Capture client's current predicted position BEFORE processing server update
+        # This is what the client was displaying at the moment of receiving the snapshot
+        client_pos_x = self.pos_x
+        client_pos_y = self.pos_y
         
         # Call super to process state (updates self.grid_state, self.target_players, etc)
         super().handle_game_state_update(data)
@@ -69,6 +83,7 @@ class InstrumentedClient(GridClient):
             if pkt.msg_type != MessageType.SNAPSHOT:
                 return
 
+            # server_ts is the broadcast timestamp - the unified sync key
             server_ts = pkt.server_timestamp
             latency = recv_ts - server_ts
             
@@ -81,6 +96,12 @@ class InstrumentedClient(GridClient):
             
             self.last_recv_ts = recv_ts
             self.last_server_ts = server_ts
+            
+            # SYNCHRONIZED POSITION LOGGING (20Hz, same rate as server broadcasts)
+            # Use server_ts (broadcast timestamp) as the unified timestamp
+            # This enables exact-match position error calculation with server logs
+            self.pos_writer.writerow([server_ts, self.client_id, client_pos_x, client_pos_y])
+            self.pos_file.flush()
             
             # We log the packet size in the 'bandwidth' column (to be aggregated later)
             self.metrics_writer.writerow([
@@ -267,14 +288,12 @@ class InstrumentedClient(GridClient):
                             # We should probably clear path on NACK (not implemented here but safe assumption)
 
                 
-                # Update Visuals (not used in headless                # Update Visuals
+                # Update Visuals (not used in headless)
                 dt = 0.016 
                 self.update_visuals(dt)
                 
-                # Log Position (Frequency ~ 100Hz max due to sleep)
-                # We log strictly here to capture CLIENT PREDICTION state vs TIME.
-                ts = get_current_timestamp_ms()
-                self.pos_writer.writerow([ts, self.client_id, self.pos_x, self.pos_y, ts])
+                # Position logging is now handled in handle_game_state_update()
+                # at 20Hz synchronized with server broadcasts using server_timestamp
                 
                 time.sleep(0.001)
 
