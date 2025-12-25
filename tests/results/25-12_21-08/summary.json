@@ -1,0 +1,28 @@
+{
+    "scenario": "Delay 100ms",
+    "timestamp": 1766689728,
+    "duration": 60,
+    "metrics": {
+        "updates_per_sec": 19.254166666666666,
+        "bandwidth_kbps": 77.78493333333333,
+        "cpu_percent": 3.857142857142857,
+        "latency": {
+            "mean": 105.46764769530405,
+            "median": 101.0,
+            "p95": 102.0
+        },
+        "jitter": {
+            "mean": 4.540232601384729,
+            "median": 0.5166164786666135,
+            "p95": 9.541549670531616
+        },
+        "position_error": {
+            "mean": 0.584241944190561,
+            "median": 1.0,
+            "p95": 1.0
+        }
+    },
+    "criteria": {
+        "system_stable": true
+    }
+}

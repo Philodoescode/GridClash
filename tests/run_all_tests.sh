@@ -34,8 +34,8 @@ run_test "loss_5"
 run_test "delay_100ms"
 
 echo ""
-echo ">>> All Tests Complete. Generating Report..."
+echo ">>> All Tests Complete. Generating Report and Plots..."
 "$VENV_PYTHON" "$REPORTER"
 
 echo ""
-echo "Done."
+echo "Done. Check tests/plots/[timestamp] for generated graphs."

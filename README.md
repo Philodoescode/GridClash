@@ -81,7 +81,7 @@ uv run bash tests/run_all_tests.sh
 
 ```bash
 # Run a specific test scenario
-uv run python tests/run_test_scenario.py <scenario> --duration 60 --clients 4
+uv run tests/run_test_scenario.py <scenario> --duration 60 --clients 4
 ```
 
 Available scenarios:

@@ -81,7 +81,7 @@ def plot_suite_report(csv_file):
 
 if __name__ == "__main__":
     # Check if a filename was provided, otherwise default to the name in your snippet
-    target_file = "tests/plots/suite_report_latest(2).csv"
+    target_file = "suite_report_latest.csv"
     
     if len(sys.argv) > 1:
         target_file = sys.argv[1]
