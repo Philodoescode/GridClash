@@ -10,6 +10,14 @@ and minimal CPU load.**
 
 </div>
 
+## 📹 Demo Video & Deliverables
+
+- **Demo Video**: [Watch on Google Drive](https://drive.google.com/drive/folders/1Jyq-CnsTCxPxu3gsYeFIkX-DAEuz_nr5?usp=sharing)
+- **Project Deliverables**: All final reports and presentations are available in the [`deliverables/`](./deliverables) folder:
+  - Final Mini-RFC (5–8 pages)
+  - Technical Report (6–8 pages)
+  - Presentation Slides (8–10 slides)
+
 ## 🚀 Setup & Installation
 
 ### Prerequisites
