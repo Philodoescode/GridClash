@@ -2,20 +2,38 @@ import os
 import json
 import glob
 import sys
+import csv
+import subprocess
 from datetime import datetime
 
-def main():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    results_root = os.path.join(base_dir, "results")
+
+def load_summaries(results_root):
+    """
+    Load test summaries. Prioritizes the consolidated all_scenarios_summary.json
+    file but falls back to individual summary.json files if needed.
+    """
+    # Try consolidated file first
+    consolidated_file = os.path.join(results_root, "all_scenarios_summary.json")
+    if os.path.exists(consolidated_file):
+        try:
+            with open(consolidated_file, 'r') as f:
+                data = json.load(f)
+                if 'scenarios' in data and len(data['scenarios']) > 0:
+                    print(f"[+] Loaded consolidated summary: {len(data['scenarios'])} scenarios")
+                    # Convert to dict keyed by scenario name
+                    return {s['scenario']: s for s in data['scenarios']}
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"[WARN] Error loading consolidated summary: {e}")
     
-    # Find all summary.json files in subdirectories
+    # Fallback: Find all individual summary.json files in subdirectories
+    print("[*] Falling back to individual summary.json files...")
     summaries = []
     for root, dirs, files in os.walk(results_root):
         if "summary.json" in files:
             with open(os.path.join(root, "summary.json"), 'r') as f:
                 try:
                     data = json.load(f)
-                    data['path'] = root # Store path to sort by time if needed
+                    data['path'] = root
                     summaries.append(data)
                 except:
                     pass
@@ -23,21 +41,55 @@ def main():
     # Sort by timestamp (newest last)
     summaries.sort(key=lambda x: x.get('timestamp', 0))
     
-    # We might have multiple runs. The user wants "average results".
-    # We will display the *latest* run for each scenario.
+    # Get latest run for each scenario
     latest_scenarios = {}
     for s in summaries:
         latest_scenarios[s['scenario']] = s
+    
+    print(f"[+] Loaded {len(latest_scenarios)} scenarios from individual files")
+    return latest_scenarios
+
+
+def run_auto_plotter():
+    """Run the auto plotter to generate all graphs."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    auto_plotter = os.path.join(base_dir, "plots", "auto_plotter.py")
+    
+    if os.path.exists(auto_plotter):
+        print("\n" + "=" * 50)
+        print("[*] Running Auto Plotter to generate graphs...")
+        print("=" * 50)
+        try:
+            result = subprocess.run(
+                [sys.executable, auto_plotter],
+                capture_output=True,
+                text=True,
+                cwd=base_dir
+            )
+            print(result.stdout)
+            if result.returncode != 0:
+                print(f"[WARN] Auto plotter errors:\n{result.stderr}")
+        except Exception as e:
+            print(f"[WARN] Failed to run auto plotter: {e}")
+    else:
+        print(f"[WARN] Auto plotter not found at: {auto_plotter}")
+
+
+def main():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    results_root = os.path.join(base_dir, "results")
+    
+    # Load summaries (prefers consolidated file)
+    latest_scenarios = load_summaries(results_root)
 
     # Order of Scenarios
     order = ["Baseline", "Loss 2%", "Loss 5%", "Delay 100ms"]
     
     print("\n" + "="*100)
-    print(f"GRIDCLASH TEST SUITE REPORT - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"GRIDCLASH TEST SUITE REPORT - {datetime.now().strftime('%d/%m %H:%M')}")
     print("="*100)
     
     # Header
-    # Scenario | Latency (Avg) | Jitter (Avg) | Error (Avg) | Error (95%) | CPU% | Pass?
     header = f"{'Scenario':<15} | {'Lat(Avg)':<10} | {'Jit(Avg)':<10} | {'Err(Avg)':<10} | {'Err(95%)':<10} | {'CPU%':<6} | {'Status'}"
     print(header)
     print("-" * 100)
@@ -45,8 +97,10 @@ def main():
     csv_rows = []
     csv_rows.append(["Scenario", "Latency_Avg", "Jitter_Avg", "Error_Avg", "Error_95", "CPU_Percent", "Status"])
 
+    scenarios_found = 0
     for name in order:
         if name in latest_scenarios:
+            scenarios_found += 1
             data = latest_scenarios[name]
             m = data['metrics']
             
@@ -55,12 +109,6 @@ def main():
             err_avg = m['position_error']['mean']
             err_95 = m['position_error']['p95']
             cpu = m['cpu_percent']
-            
-            # Simple Pass/Fail check redone here or trust the runner?
-            # The runner doesn't save "Pass/Fail" explicitly in the json boolean, but we can infer or just print stats.
-            # We'll just print stats.
-            
-            status = "DONE" # Placeholder, real check requires re-evaluating criteria stored in json
             
             # Check criteria
             passed = True
@@ -80,15 +128,18 @@ def main():
             print(f"{name:<15} | {'N/A':<10} | {'N/A':<10} | {'N/A':<10} | {'N/A':<10} | {'N/A':<6} | N/A")
 
     print("-" * 100)
+    print(f"Total scenarios: {scenarios_found}/{len(order)}")
     
     # Save to file
     summary_file = os.path.join(results_root, "suite_report_latest.csv")
-    import csv
     with open(summary_file, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerows(csv_rows)
     print(f"\nSaved suite report to: {summary_file}")
     print("="*100)
+    
+    # Run auto plotter to generate all graphs
+    run_auto_plotter()
 
 if __name__ == "__main__":
     main()

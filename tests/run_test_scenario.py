@@ -439,6 +439,69 @@ def stats_dict(data):
     }
 
 
+def save_consolidated_summary(new_summary, results_dir):
+    """
+    Save/update a consolidated summary file that contains all test scenarios.
+    This file is located at results/all_scenarios_summary.json and accumulates
+    results from all test runs, updating existing scenarios or adding new ones.
+    """
+    from datetime import datetime
+    
+    # Get the parent results directory
+    base_results_dir = os.path.dirname(results_dir)
+    consolidated_file = os.path.join(base_results_dir, "all_scenarios_summary.json")
+    
+    # Load existing consolidated data or create new
+    consolidated = {
+        "last_updated": datetime.now().strftime("%d/%m %H:%M"),
+        "last_updated_timestamp": int(time.time()),
+        "scenarios": []
+    }
+    
+    if os.path.exists(consolidated_file):
+        try:
+            with open(consolidated_file, 'r') as f:
+                consolidated = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass  # Start fresh if file is corrupted
+    
+    # Update or add the new scenario
+    scenario_name = new_summary['scenario']
+    found = False
+    for i, existing in enumerate(consolidated.get('scenarios', [])):
+        if existing.get('scenario') == scenario_name:
+            # Update existing scenario with new data
+            consolidated['scenarios'][i] = new_summary
+            found = True
+            break
+    
+    if not found:
+        # Add new scenario
+        if 'scenarios' not in consolidated:
+            consolidated['scenarios'] = []
+        consolidated['scenarios'].append(new_summary)
+    
+    # Update timestamp
+    consolidated['last_updated'] = datetime.now().strftime("%d/%m %H:%M")
+    consolidated['last_updated_timestamp'] = int(time.time())
+    
+    # Sort scenarios by a logical order
+    scenario_order = ["Baseline", "Loss 2%", "Loss 5%", "Delay 100ms"]
+    def sort_key(s):
+        name = s.get('scenario', '')
+        if name in scenario_order:
+            return scenario_order.index(name)
+        return len(scenario_order)
+    
+    consolidated['scenarios'].sort(key=sort_key)
+    
+    # Save consolidated file
+    with open(consolidated_file, 'w') as f:
+        json.dump(consolidated, f, indent=4)
+    
+    print(f"[+] Updated consolidated summary: {consolidated_file}")
+
+
 def save_summary_json(stats, scenario, results_dir):
     lat = stats_dict(stats.latency)
     jit = stats_dict(stats.jitter)
@@ -468,8 +531,12 @@ def save_summary_json(stats, scenario, results_dir):
         "criteria": scenario.criteria
     }
 
+    # Save individual summary to this test's folder
     with open(os.path.join(results_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=4)
+    
+    # Also save/update consolidated summary file with all scenarios
+    save_consolidated_summary(summary, results_dir)
 
 
 def print_report(stats, scenario):
